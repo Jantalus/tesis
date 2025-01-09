@@ -14,7 +14,6 @@
 //
 //
 void myFunction(int a, int b, int c) {
-  //int twoByTwoMatrix[2][2] = {50};
   int myTenPositionVector[10];
 
   for (int primerIndice = 0; primerIndice < 10; primerIndice++)

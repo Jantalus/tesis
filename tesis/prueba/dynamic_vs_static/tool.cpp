@@ -48,17 +48,20 @@ int64_t get_fbreg_value(std::string id_to_find, std::string path_to_dwarfinfo) {
     return fbreg_value;
 }
 
-int64_t get_func_lowpc(std::string id_to_find, std::string path_to_dwarfinfo) {
+std::tuple<int64_t,int64_t>  get_func_high_and_low_pc(std::string id_to_find, std::string path_to_dwarfinfo) {
     std::ifstream file(path_to_dwarfinfo);
     if (!file.is_open()) {
         std::cerr << "Error opening file with path: '" << path_to_dwarfinfo << "'" << std::endl;
-        return 1;
+        return std::make_tuple(1,1);
     }
 
     std::string line;
     bool found = false;
-    std::regex fbreg_pattern(R"(.*DW_AT_low_pc\s*:\s*0x(\d+).*)"); // Regex to match DW_OP_fbreg value
+    // "$"
+    std::regex lowpc_regex(R"(.*DW_AT_low_pc\s*:\s*0x([A-Fa-f0-9]+).*)"); // Regex to match X_pc_value (ex: 0x12fe)
+    std::regex highpc_regex(R"(.*DW_AT_high_pc\s*:\s*0x([A-Fa-f0-9]+).*)");
     int64_t lowpc_value = -1;
+    int64_t highpc_value = -1;
 
     // Read the file line by line
     while (std::getline(file, line)) {
@@ -68,15 +71,29 @@ int64_t get_func_lowpc(std::string id_to_find, std::string path_to_dwarfinfo) {
         }
 
         // If the ID was found, look for the DW_AT_location field and the DW_OP_fbreg value
-        if (found && line.find("DW_AT_low_pc") != std::string::npos) {
-            // Check if the line contains the DW_OP_fbreg operator
-            std::smatch match;
-            if (std::regex_match(line, match, fbreg_pattern)) {
-                lowpc_value = std::stoll(match[1]);
-                // std::cout << "HEX lowpc value for ID " << id_to_find << ": " << lowpc_value << std::endl;
-                break;
-            } else {
-                throw std::runtime_error("func low PC value not found");
+        if (found) {
+            if (line.find("DW_AT_low_pc") != std::string::npos) {
+                std::smatch match;
+                if (std::regex_match(line, match, lowpc_regex)) {
+                    lowpc_value = std::stoll(match[1], nullptr, 16);
+                    // std::cout << "HEX lowpc value for ID " << id_to_find << ": " << lowpc_value << std::endl;
+                }
+                else {
+                    throw std::runtime_error("func low PC value not found");
+                }
+            }
+            if (line.find("DW_AT_high_pc") != std::string::npos) {
+                std::smatch match;
+                if (std::regex_match(line, match, highpc_regex)) {
+                    highpc_value = std::stoll(match[1], nullptr, 16);
+                    // std::cout << "HEX lowpc value for ID " << id_to_find << ": " << lowpc_value << std::endl;
+                }
+                else {
+                    throw std::runtime_error("func high PC value not found");
+                }
+            }
+            if (lowpc_value != -1 && highpc_value != -1) {
+                break; // Optional: Stop searching once both values are found
             }
         }
     }
@@ -87,7 +104,7 @@ int64_t get_func_lowpc(std::string id_to_find, std::string path_to_dwarfinfo) {
 
     file.close();
 
-    return lowpc_value;
+    return std::make_tuple(lowpc_value, highpc_value);
 }
 
 int main(int argc, char* argv[]) {
@@ -97,18 +114,10 @@ int main(int argc, char* argv[]) {
     }
 
     std::string firstArg = argv[1];
-    if (firstArg != "fbreg" && firstArg != "lowpc") {
-        std::cerr << "First param should be: fbreg|lowpc. And actual is " << argv[1] << std::endl;
+    if (firstArg != "fbreg" && firstArg != "pc") {
+        std::cerr << "First param should be: fbreg|pc. And actual is " << argv[1] << std::endl;
         return 1; // Exit with an error code
     }
-    try {
-        std::string dwarf_id = argv[2];
-        std::stoi(dwarf_id);
-    } catch(std::exception &err) {
-        std::cerr << "Dwarf ID to find should be a number" << std::endl;
-        return 1; // Exit with an error code
-    }
-
 
     std::string id_to_find = argv[2];  // The ID to find
     std::string path_to_dwarfinfo = argv[3];  // Path to the DWARF info file
@@ -120,12 +129,12 @@ int main(int argc, char* argv[]) {
             std::cout << fbreg_value << std::endl;
         }
         else {
-            int64_t lowpc_value = get_func_lowpc(id_to_find, path_to_dwarfinfo);
-            std::cout << lowpc_value << std::endl;
+            std::tuple<int64_t,int64_t> low_and_high_pc = get_func_high_and_low_pc(id_to_find, path_to_dwarfinfo);
+            std::cout << std::get<0>(low_and_high_pc) << "," << std::get<1>(low_and_high_pc) << std::endl;
         }
     }
-    catch (std::exception &err) {
-        std::cerr << "Dwarf ID to find should be a number" << std::endl;
+    catch (const std::exception &err) {
+        std::cerr << "Error executing: " << err.what() << std::endl;
         return 1; // Exit with an error code
     }
 
