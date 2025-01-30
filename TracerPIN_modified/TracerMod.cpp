@@ -35,9 +35,47 @@
 #include <fcntl.h>
 #include <array>     // for std::array
 
+// For string split of lowpc,higpc 
+#include <vector>
+
 #ifndef GIT_DESC
 #define GIT_DESC "(unknown version)"
 #endif //GIT_DESC
+/* ===================================================================== */
+/* Names of malloc and free */
+/* ===================================================================== */
+#if defined(TARGET_MAC)
+#define MALLOC "_malloc"
+#define FREE "_free"
+#else
+#define MALLOC "malloc"
+#define FREE "free"
+#endif
+
+// Force each thread's data to be in its own data cache line so that
+// multiple threads do not contend for the same data cache line.
+// This avoids the false sharing problem.
+// #define PADSIZE 56 // 64 byte line size: 64-8 
+
+// Ver despues que onda esta falopeada
+class threadData_t {
+    public:
+        ADDRINT sizeAsked;
+        // UINT8 _pad[PADSIZE];
+        std::map<ADDRINT, ADDRINT>* sizeByPointer;
+
+        threadData_t(){
+            sizeByPointer = new std::map<ADDRINT, ADDRINT>;
+        }
+
+        ~threadData_t() {
+            free(sizeByPointer);
+        }
+
+};
+// Initialized once in main()
+static TLS_KEY tlsKey = INVALID_TLS_KEY;
+
 // using namespace std;
 /* ===================================================================== */
 /* Global Variables */
@@ -65,8 +103,11 @@ ADDRINT main_begin;
 ADDRINT main_end;
 
 // Extras
+std::string readelfTxtFile = "/home/mgiampaolo/Desktop/tesis/autogen_readelf.txt";
+
 ADDRINT func_offset = 0;
-ADDRINT var_offset = 0;
+ADDRINT func_totalbytes = 0;
+INT64 var_offset = 0;
 UINT64 var_byte_size = 0;
 bool filter_by_dwarf = false;
 // /////////////
@@ -135,6 +176,8 @@ KNOB<UINT64> KnobVarByteSize(KNOB_MODE_WRITEONCE, "pintool",
                        "vs", "0", "Variable to trace size in Bytes. Used with -vdid option");
 KNOB<std::string> KnobFunctionDwarfDIE_ID(KNOB_MODE_WRITEONCE, "pintool",
                          "fdid", "0", "Function DWARF DIE ID, obtained from de debug_info section. Recommended to use readelf -wi <executable> \n Default (0) means no use of this filter. Use with <PONER ACA SIZE IN BYTES Y FUNC OPT>");
+KNOB<BOOL> KnobDebugLogs(KNOB_MODE_WRITEONCE, "pintool",
+                           "d", "0", "Add debug logs for reading RBP, and knowing when addresses are filtered because of func, or because of not var of interest");
 
 /* ============================================================================= */
 /* Intel PIN (3.7) is missing implementations of many C functions, we implement  */
@@ -197,47 +240,101 @@ INT32 Usage()
 }
 
 /* ===================================================================== */
+/* Mati Helper funcs                                                      */
+/* ===================================================================== */
+
+std::vector<std::string> splitstring(std::string myString, char delimiter) {
+    std::istringstream stream(myString);
+    std::string token;
+    std::vector<std::string> result;
+
+    while (std::getline(stream, token, delimiter)) {
+        result.push_back(token);
+    }
+
+    return result;
+}
+
+
+
+/* ===================================================================== */
 /* Helper Functions                                                      */
 /* ===================================================================== */
 
 BOOL ExcludedAddress(ADDRINT ip)
 {
-    switch (logfilter)
-    {
-    case 1:
-        if (! main_reached)
-        {
-	        // Filter loader before main
-	        if ((ip < main_begin) || (ip > main_end))
-	            return TRUE;
-            else
-                main_reached=true;
-		}
-        if ((ip >= main_begin) && (ip <= main_end))
-            return FALSE;
-        for(modmap_t::iterator it = mod_data.begin(); it != mod_data.end(); ++it)
-        {
-            if(it->second.excluded == FALSE) continue;
-            /* Is the EIP value within the range of any excluded module? */
-            if(ip >= it->second.begin && ip <= it->second.end) return TRUE;
+    // Added code, filter by dwarf has priority over "-f" option for exclusion of addr
+    if (filter_by_dwarf) {
+// Me interesa unicamente cuando este 
+// el IP dentro de mi funcion: (baseImage+lowpc) - (baseImage+lowpc+highpc)
+// baseImage = main_begin
+        if (func_offset == 0) {
+            std::cerr << "Offset function 0, but filter_by_dwarf true" << std::endl;
         }
-        break;
-    case 2:
-    {
-        PIN_LockClient();
-        IMG im = IMG_FindByAddress(ip);
-        PIN_UnlockClient();
-        if (! IMG_Valid(im) || ! IMG_IsMainExecutable(im))
+
+        if (KnobDebugLogs.Value()) {
+            TraceFile << "[DEBUG] EXCLUDE ADDR - FUNC LOWPC ADDR:";
+            TraceFile << (main_begin + func_offset) << " FUNC HIGHPC MAX ADDR: " << (main_begin + func_offset + func_totalbytes) << std::endl;
+        }
+
+        if ((ip < (main_begin + func_offset) ) || (ip > (main_begin + func_offset + func_totalbytes)))
             return TRUE;
-        break;
+        else 
+            return FALSE;
     }
-    case 3:
-        return ((ip < filter_begin) || (ip > filter_end));
-        break;
-    default:
-        break;
+    else {
+        switch (logfilter) {
+        case 1:
+            if (!main_reached) {
+                // Filter loader before main
+                if ((ip < main_begin) || (ip > main_end))
+                    return TRUE;
+                else
+                    main_reached = true;
+            }
+            if ((ip >= main_begin) && (ip <= main_end))
+                return FALSE;
+            for (modmap_t::iterator it = mod_data.begin(); it != mod_data.end(); ++it) {
+                if (it->second.excluded == FALSE)
+                    continue;
+                /* Is the EIP value within the range of any excluded module? */
+                if (ip >= it->second.begin && ip <= it->second.end)
+                    return TRUE;
+            }
+            break;
+        case 2:
+        {
+            PIN_LockClient();
+            IMG im = IMG_FindByAddress(ip);
+            PIN_UnlockClient();
+            if (!IMG_Valid(im) || !IMG_IsMainExecutable(im))
+                return TRUE;
+            break;
+        }
+        case 3:
+            return ((ip < filter_begin) || (ip > filter_end));
+            break;
+        default:
+            break;
+        }
     }
+
     return FALSE;
+}
+BOOL ExcludedAddressForVar(ADDRINT ip)
+{
+
+//    cerr << hex << ip << "<>" << filter_live_start << dec << std::endl;
+    if (ip == filter_live_start) {
+        filter_live_i++;
+        if ((filter_live_n == 0) || (filter_live_i == filter_live_n)) filter_live_reached=true;
+//        cerr << "BEGIN " << filter_live_i << " @" << hex << filter_live_start << dec << " -> " << filter_live_reached << std::endl;
+    }
+    if (ip == filter_live_stop) {
+        filter_live_reached=false;
+//        cerr << "END   " << filter_live_i << " @" << hex << filter_live_stop << dec << " -> " << filter_live_reached << std::endl;
+    }
+    return !filter_live_reached;
 }
 
 BOOL ExcludedAddressLive(ADDRINT ip)
@@ -316,7 +413,13 @@ VOID printInst(ADDRINT ip, std::string *disass, INT32 size)
 
 static VOID RecordMemHuman(ADDRINT ip, CHAR r, ADDRINT addr, UINT8* memdump, INT32 size, BOOL isPrefetch)
 {
-    TraceFile << "[" << r << "]" << std::setw(10) << std::dec << bigcounter << std::hex << std::setw(16) << (void *) ip << "                                                   "
+    // OS_THREAD_ID tid = PIN_GetTid();
+
+    // TODO: Agregar nro de instruccion
+
+    TraceFile << "[" << r << "]" 
+    //<< "[" << tid << "]" 
+    << std::setw(10) << std::dec << bigcounter << std::hex << std::setw(16) << (void *) ip << "                                                   "
               << " " << std::setw(18) << (void *) addr << " size="
               << std::dec << std::setw(2) << size << " value="
               << std::hex << std::setw(18-2*size);
@@ -424,12 +527,45 @@ static VOID RecordMemSqlite(ADDRINT ip, CHAR r, ADDRINT addr, UINT8* memdump, IN
     }
 }
 
-static VOID RecordMem(ADDRINT ip, CHAR r, ADDRINT addr, INT32 size, BOOL isPrefetch)
+static VOID RecordMem(CONTEXT* regContext, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size, BOOL isPrefetch)
 {
     UINT8 memdump[256];
+    if (filter_by_dwarf) {
+        // Excluyo si no esta en [rbp] - offsetVar
+        // Access the RBP value from the context
+        ADDRINT rbpValue = 0;
+        #if defined(TARGET_IA32E)
+        rbpValue = PIN_GetContextReg(regContext, REG_RBP);
+        // ADDRINT rbpValue = *reinterpret_cast<ADDRINT*>(rbp_val)
+        #endif
+        
+        ADDRINT sixteenBytes = ADDRINT(16);
+        ADDRINT trueOffset = var_offset - sixteenBytes;
+        ADDRINT varLowADDR = rbpValue - trueOffset;
+        ADDRINT varHighADDR = rbpValue - trueOffset + var_byte_size;
+
+        if(varLowADDR > addr || varHighADDR <= addr)
+            return;
+
+        if (KnobDebugLogs.Value()) {
+            OS_THREAD_ID tid = PIN_GetTid();
+            TraceFile
+                << "[DEBUG] TID:" << tid << " - "
+                << "RBP VALUE: " << rbpValue << std::endl;
+
+            TraceFile << "[DEBUG] memory instruction over var of interest ";
+            TraceFile << "with varLowADDR " << varLowADDR << "and varHighADDR " << varHighADDR << std::endl;
+        }
+
+        if (logfilterlive && ExcludedAddressLive(ip))
+            return;
+    }
     // test on logfilterlive here to avoid calls when not using live filtering
-    if (logfilterlive && ExcludedAddressLive(ip))
-        return;
+     else {
+        if (logfilterlive && ExcludedAddressLive(ip))
+            return;
+    }
+
     PIN_GetLock(&_lock, ip);
     if ((size_t)size > sizeof(memdump))
     {
@@ -461,17 +597,20 @@ static VOID RecordMem(ADDRINT ip, CHAR r, ADDRINT addr, INT32 size, BOOL isPrefe
 
 static ADDRINT WriteAddr;
 static INT32 WriteSize;
+static CONTEXT* RegContext;
 
-static VOID RecordWriteAddrSize(ADDRINT addr, INT32 size)
+
+static VOID RecordWriteAddrSize(ADDRINT addr, INT32 size, CONTEXT* regContext)
 {
     WriteAddr = addr;
     WriteSize = size;
+    RegContext = regContext;
 }
 
 
 static VOID RecordMemWrite(ADDRINT ip)
 {
-    RecordMem(ip, 'W', WriteAddr, WriteSize, false);
+    RecordMem(RegContext, ip, 'W', WriteAddr, WriteSize, false);
 }
 
 /* ================================================================================= */
@@ -480,6 +619,10 @@ static VOID RecordMemWrite(ADDRINT ip)
 VOID Instruction_cb(INS ins, VOID *v)
 {
     ADDRINT ceip = INS_Address(ins);
+
+
+    // Either by -f -F filters, or by -fdid function lowpc and highpc address
+    // excluding ip addresses outside of my function of interest
     if(ExcludedAddress(ceip))
         return;
 
@@ -489,6 +632,7 @@ VOID Instruction_cb(INS ins, VOID *v)
         {
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordMem,
+                IARG_CONTEXT,
                 IARG_INST_PTR,
                 IARG_UINT32, 'R',
                 IARG_MEMORYREAD_EA,
@@ -501,6 +645,7 @@ VOID Instruction_cb(INS ins, VOID *v)
         {
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordMem,
+                IARG_CONTEXT,
                 IARG_INST_PTR,
                 IARG_UINT32, 'R',
                 IARG_MEMORYREAD2_EA,
@@ -513,11 +658,11 @@ VOID Instruction_cb(INS ins, VOID *v)
         // the call happens iff the store will be actually executed
         if (INS_IsMemoryWrite(ins))
         {
-            // Callback a mi func?
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordWriteAddrSize,
                 IARG_MEMORYWRITE_EA,
                 IARG_MEMORYWRITE_SIZE,
+                IARG_CONTEXT,
                 IARG_END);
 
             if (INS_HasFallThrough(ins))
@@ -537,7 +682,7 @@ VOID Instruction_cb(INS ins, VOID *v)
 
         }
     }
-    if (KnobLogIns.Value()) {
+    if (KnobLogIns.Value() && !filter_by_dwarf) {
         std::string* disass = new std::string(INS_Disassemble(ins));
         INS_InsertCall(
             ins, IPOINT_BEFORE, (AFUNPTR)printInst,
@@ -548,6 +693,44 @@ VOID Instruction_cb(INS ins, VOID *v)
     }
 }
 
+/* ===================================================================== */
+/* Routine tracing functions                                             */
+/* ===================================================================== */
+
+void FreeBefore(THREADID tid, ADDRINT pointerToFree){
+    threadData_t* threadData = static_cast<threadData_t*>(PIN_GetThreadData(tlsKey, tid));
+    int i = 0;
+    for (std::map<ADDRINT, ADDRINT>::iterator it = threadData->sizeByPointer->begin(); it != threadData->sizeByPointer->end(); it++) {
+        TraceFile << "Thread FREE" << tid << "- MapElement " << i << " of map is:" << it->second << std::endl;
+        if ((it->second) == pointerToFree)
+        {
+            threadData->sizeByPointer->erase(it);
+            TraceFile << "Thread " << tid << " freed " << pointerToFree << std::endl;
+            break;
+        }
+        i++;
+    }
+}
+
+void MallocBefore(THREADID tid, ADDRINT size){
+    
+    threadData_t* threadData = static_cast<threadData_t*>(PIN_GetThreadData(tlsKey, tid));
+    threadData->sizeAsked = size;
+
+    TraceFile << "Thread " << tid << " asked for 0x" << size << " bytes of memory" << std::endl;
+}
+
+void MallocAfter(THREADID tid, ADDRINT memPointer) {
+    threadData_t* threadData = static_cast<threadData_t*>(PIN_GetThreadData(tlsKey, tid));
+    threadData->sizeByPointer->insert({memPointer, threadData->sizeAsked});
+
+    TraceFile << "Thread " << tid << " got pointer 0x" << memPointer << " with " << threadData->sizeAsked << " bytes of memory" << std::endl;
+}
+
+//void MallocAfter(ADDRINT memPointer) {
+//    TraceFile << "Thread entered malloc after with mempointer 0x" << memPointer << std::endl;
+//}
+
 
 /* ================================================================================= */
 /* This is called every time a MODULE (dll, etc.) is LOADED                          */
@@ -557,15 +740,54 @@ void ImageLoad_cb(IMG Img, void *v)
     std::string imageName = IMG_Name(Img);
     ADDRINT lowAddress = IMG_LowAddress(Img);
     ADDRINT highAddress = IMG_HighAddress(Img);
-    UINT32 numRegions = IMG_NumRegions(Img);
+    // UINT32 numRegions = IMG_NumRegions(Img);
+
+    //for (SEC sec = IMG_SecHead(Img); SEC_Valid(sec); sec = SEC_Next(sec)) {
+    //    for (RTN rtn = SEC_RtnHead(sec); RTN_Valid(rtn); rtn = RTN_Next(rtn)) {
+    //        std::cout << "Found function: " << RTN_Name(rtn) << " in " << IMG_Name(Img) << std::endl;
+    //    }
+    //}
 
     bool filtered = false;
+
+    // Instrument malloc routine, for tracking dynamic variables
+    RTN mallocRtn = RTN_FindByName(Img, MALLOC);
+    if (RTN_Valid(mallocRtn))
+    {
+        RTN_Open(mallocRtn);
+
+        // Instrument malloc() to print the input argument value and the return value.
+        RTN_InsertCall(mallocRtn, IPOINT_BEFORE, (AFUNPTR)MallocBefore,
+                       IARG_THREAD_ID, IARG_FUNCARG_ENTRYPOINT_VALUE, 0,// IARG_RETURN_IP,
+                       IARG_END);
+        RTN_InsertCall(mallocRtn, IPOINT_AFTER, (AFUNPTR)MallocAfter,
+                       IARG_THREAD_ID, IARG_FUNCRET_EXITPOINT_VALUE, IARG_END);
+        // RTN_InsertCall(mallocRtn, IPOINT_AFTER, (AFUNPTR)MallocAfter,
+        //                IARG_FUNCRET_EXITPOINT_VALUE, IARG_END);
+
+        RTN_Close(mallocRtn);
+    }
+
+    // Find the free() function.
+    RTN freeRtn = RTN_FindByName(Img, FREE);
+    if (RTN_Valid(freeRtn))
+    {
+        RTN_Open(freeRtn);
+        // Instrument free() to print the input argument value.
+        RTN_InsertCall(freeRtn, IPOINT_BEFORE, (AFUNPTR)FreeBefore,
+                       IARG_THREAD_ID, IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+                       IARG_END);
+        RTN_Close(freeRtn);
+    }
+
     PIN_GetLock(&_lock, 0);
     if(IMG_IsMainExecutable(Img))
     {
+
         switch (LogType) {
             case HUMAN:
 
+                /*
                 TraceFile << "[-] List of Symbols with address of Main Image" << std::endl;
                 TraceFile << "[--------------------]" << std::endl;
                 for( SYM sym= IMG_RegsymHead(Img); SYM_Valid(sym); sym = SYM_Next(sym) ) {
@@ -577,6 +799,7 @@ void ImageLoad_cb(IMG Img, void *v)
                 TraceFile << "[-] Image base: 0x" << std::hex << lowAddress  << std::endl;
                 TraceFile << "[-] Image end:  0x" << std::hex << highAddress << std::endl;
                 TraceFile << "[-] Number of consecutive regions: " << std::dec << numRegions  << std::endl;
+                */
                 if (logfilter==2)
                 {
                     TraceFile << "[!] Filter all addresses out of that range" << std::endl;
@@ -601,6 +824,15 @@ void ImageLoad_cb(IMG Img, void *v)
         }
         main_begin = lowAddress;
         main_end = highAddress;
+
+        /* Validar filtro de instrucciones segun direccion de la funcion
+
+        TraceFile << "Image base: 0x" << std::hex << main_begin << std::endl;
+        TraceFile << "Image end:  0x" << std::hex << main_end << std::endl;
+        TraceFile << "Image base + Func Offset: 0x" << std::hex << (main_begin + func_offset) << std::endl;
+        TraceFile << "Image base + Func Offset + Func size in bytes: 0x" << std::hex << (main_begin + func_offset + func_totalbytes) << std::endl;
+        TraceFile << "Main end: 0x" << std::hex << main_end << std::endl;
+        */
     } else {
         if((logfilter == 1) &&
                 ((imageName.compare(0, 10, "C:\\WINDOWS") == 0) ||
@@ -815,7 +1047,7 @@ void LogBasicBlock(ADDRINT addr, UINT32 size)
                             IARG_FUNCARG_ENTRYPOINT_VALUE,
                             2,
                             IARG_END
-                        );
+                       );
                     }
                 }
             }
@@ -834,6 +1066,12 @@ void LogBasicBlock(ADDRINT addr, UINT32 size)
     void ThreadStart_cb(THREADID threadIndex, CONTEXT *ctxt, INT32 flags, VOID *v)
     {
         PIN_GetLock(&_lock, threadIndex + 1);
+        threadData_t* sizeOfLastMalloc = new threadData_t;
+        if (PIN_SetThreadData(tlsKey, sizeOfLastMalloc, threadIndex) == FALSE) {
+            std::cerr << "PIN_SetThreadData sizeOfLastMalloc failed" << std::endl;
+            PIN_ExitProcess(1);
+        }
+
         if (InfoType >= T) bigcounter++;
         InfoType=T;
         switch (LogType) {
@@ -867,6 +1105,10 @@ void LogBasicBlock(ADDRINT addr, UINT32 size)
                     printf("THREAD error: %s\n", sqlite3_errmsg(db));
                 break;
         }
+        // free data saved by thread
+        threadData_t* tdata = static_cast<threadData_t*>(PIN_GetThreadData(tlsKey, threadIndex));
+        delete tdata;
+
         PIN_ReleaseLock(&_lock);
     }
 
@@ -932,6 +1174,13 @@ void LogBasicBlock(ADDRINT addr, UINT32 size)
             return Usage();
         }
 
+        // Obtain a Key for TLS (Thread Local Storage)
+        tlsKey = PIN_CreateThreadDataKey(NULL);
+        if (tlsKey == INVALID_TLS_KEY) {
+            std::cerr << "number of already allocated keys reached the MAX_CLIENT_TLS_KEYS limit. Needed for dynamic variables tracing" << std::endl;
+            PIN_ExitProcess(1);
+        }
+
         TraceName = KnobOutputFile.Value();
 
         TraceFile.open(TraceName.c_str());
@@ -949,49 +1198,54 @@ void LogBasicBlock(ADDRINT addr, UINT32 size)
             }
         }
 
-        // TODO: Agregar chequeos de tipos, que sea un numero pelado
-        
         std::string var_dwarf_die_id = KnobVariableDwarfDIE_ID.Value();
         std::string func_dwarf_die_id = KnobFunctionDwarfDIE_ID.Value();
 
-        std::string dwarf_txt =  "/home/mgiampaolo/Desktop/tesis/readelf_vector_wi.txt";
+        // readelf -wi MyProgram > /home/mgiampaolo/Desktop/tesis/autogen_readelf.txt
+        std::string command = "readelf -wi " + std::string(argv[argc-1]) + " > " + readelfTxtFile;
+        executeCommand(command);
+
         filter_by_dwarf = var_dwarf_die_id > "0" && func_dwarf_die_id > "0";
         if (filter_by_dwarf) {
+        #if !defined(TARGET_IA32E)
+            std::cerr << "TARGET IA32e not defined and can't access register data for PIN CONTEXT" << std::endl;
+            return 1;
+        #endif
             var_byte_size = KnobVarByteSize.Value();
 
             TraceFile << "Using DWARF Function DIE ID: " << func_dwarf_die_id << std::endl;
             TraceFile << "Using DWARF Variable DIE ID: " << var_dwarf_die_id;
             TraceFile << " with size " << std::dec << var_byte_size << std::endl;
 
-            std::string command = "/home/mgiampaolo/Desktop/tesis/prueba/tool fbreg " + var_dwarf_die_id + " " + dwarf_txt;
+            std::string command = "/home/mgiampaolo/Desktop/tesis/prueba/tool fbreg " + var_dwarf_die_id + " " + readelfTxtFile;
             std::string fbreg_offset = executeCommand(command);
             if (fbreg_offset == "") {
                 std::cerr << "ERR: failed getting fbreg offset" << std::endl;
             }
 
-            command = "/home/mgiampaolo/Desktop/tesis/prueba/tool lowpc " + func_dwarf_die_id +  + " " + dwarf_txt;
-            std::string lowpc_addr = executeCommand(command);
-            if (lowpc_addr == "") {
-                std::cerr << "ERR: failed getting lowpc address" << std::endl;
+            command = "/home/mgiampaolo/Desktop/tesis/prueba/tool pc " + func_dwarf_die_id +  + " " + readelfTxtFile;
+            std::string low_and_high_pc = executeCommand(command);
+            std::vector<std::string> lowAndHigh = splitstring(low_and_high_pc, ',');
+            if (low_and_high_pc == "" || lowAndHigh.size() != 2) {
+                std::cerr << "ERR: failed getting lowpc and highpc address of func" << std::endl;
             }
-
 
             TraceFile << "FBREG OFFSET: " << fbreg_offset << std::endl;
-            TraceFile << "LOWPC addr: " << lowpc_addr << std::endl;
-            // TODO: Catch errores??
-            try {
-                func_offset = std::stoi(lowpc_addr);
-            }
-            catch (std::exception &err) {
-                std::cerr << "Dwarf ID of function to find should be a number" << std::endl;
+            TraceFile << "LOWPC,HIGHPC addr: " << low_and_high_pc << std::endl;
+
+            // PIN Forces to compile without try catch, so if no numbers are returned kaboom
+            func_offset = std::stoi(lowAndHigh[0]);
+            func_totalbytes = std::stoi(lowAndHigh[1]);
+
+            if (func_offset == 0 || func_totalbytes == 0) {
+                std::cerr << "Error getting func offset" << std::endl;
                 return 1; // Exit with an error code
             }
 
-            try {
-                var_offset = std::stoi(fbreg_offset);
-            }
-            catch (std::exception &err) {
-                std::cerr << "Dwarf ID of variable to find should be a number" << std::endl;
+            var_offset = std::stoi(fbreg_offset.substr(1, fbreg_offset.length()));
+
+            if (var_offset == 0) {
+                std::cerr << "Error getting var offset" << std::endl;
                 return 1; // Exit with an error code
             }
         }

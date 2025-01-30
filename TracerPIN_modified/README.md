@@ -1,5 +1,5 @@
-TracerPIN
-=========
+TracerPIN (modified)
+====================
 
 TracerPIN an Intel PIN tool for generating execution traces of a running process.
 Support is limited to platforms supported by Intel PIN and TracerPIN has only been tested under
@@ -44,7 +44,7 @@ Usage
 Calling the tool without argument will provide some help:
 
 ```bash
-Tracer
+TracerMod
 ```
 
 ### Human-readable trace
@@ -53,13 +53,13 @@ Here's the basic command line you would use to trace the `ls` program and genera
 file called `ls.log`.
 
 ```bash
-Tracer -o ls.log -- ls
+TracerMod -o ls.log -- ls
 ```
 
 or to accept the default filename, just do
 
 ```bash
-Tracer ls
+TracerMod ls
 ```
 
 The text format is relatively easy to read. Each line start with a tag indicating the information 
@@ -81,7 +81,7 @@ To visualize this trace with TraceGraph, you need to generate a sqlite database 
 `-t sqlite` option.
 
 ```bash
-Tracer -t sqlite -o ls.db -- ls
+TracerMod -t sqlite -o ls.db -- ls
 ```
 
 ### Filtering addresses
