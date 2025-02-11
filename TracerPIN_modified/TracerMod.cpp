@@ -272,15 +272,22 @@ BOOL ExcludedAddress(ADDRINT ip)
             std::cerr << "Offset function 0, but filter_by_dwarf true" << std::endl;
         }
 
-        if (KnobDebugLogs.Value()) {
-            TraceFile << "[DEBUG] EXCLUDE ADDR - FUNC LOWPC ADDR:";
-            TraceFile << (main_begin + func_offset) << " FUNC HIGHPC MAX ADDR: " << (main_begin + func_offset + func_totalbytes) << std::endl;
-        }
+        //if (KnobDebugLogs.Value()) {
+        //    TraceFile << "[DEBUG] EXCLUDE ADDR - FUNC LOWPC ADDR:";
+        //    TraceFile << (main_begin + func_offset) << " FUNC HIGHPC MAX ADDR: " << (main_begin + func_offset + func_totalbytes) << std::endl;
+        //}
 
-        if ((ip < (main_begin + func_offset) ) || (ip > (main_begin + func_offset + func_totalbytes)))
+        if ((ip < (main_begin + func_offset) ) || (ip > (main_begin + func_offset + func_totalbytes))) {
+            if (KnobDebugLogs.Value()) {
+                // TraceFile << "[DEBUG] Excluding address out of func 0x" << ip << std::endl;
+            }
             return TRUE;
-        else 
+        } else {
+            if (KnobDebugLogs.Value()) {
+                TraceFile << "[DEBUG] Address 0x" << ip << " in func address range" << std::endl;
+            }
             return FALSE;
+        }
     }
     else {
         switch (logfilter) {
@@ -527,9 +534,8 @@ static VOID RecordMemSqlite(ADDRINT ip, CHAR r, ADDRINT addr, UINT8* memdump, IN
     }
 }
 
-static VOID RecordMem(CONTEXT* regContext, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size, BOOL isPrefetch)
+static VOID RecordMem(CONTEXT* regContext, THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size, BOOL isPrefetch)
 {
-    UINT8 memdump[256];
     if (filter_by_dwarf) {
         // Excluyo si no esta en [rbp] - offsetVar
         // Access the RBP value from the context
@@ -540,31 +546,80 @@ static VOID RecordMem(CONTEXT* regContext, ADDRINT ip, CHAR r, ADDRINT addr, INT
         #endif
         
         ADDRINT sixteenBytes = ADDRINT(16);
-        ADDRINT trueOffset = var_offset - sixteenBytes;
-        ADDRINT varLowADDR = rbpValue - trueOffset;
-        ADDRINT varHighADDR = rbpValue - trueOffset + var_byte_size;
 
-        if(varLowADDR > addr || varHighADDR <= addr)
-            return;
+        // Assume that no var size means that we want a dynamically located variable
+        if (var_byte_size == 0) {
+        //if (false) {
+            if(KnobDebugLogs.Value()) {
+                TraceFile << "[DEBUG] Var byte size is 0, assumed heap allocated variable with ";
+                TraceFile << "DWARF ID " << variable_dwarf_id << std::endl;
+            }
 
-        if (KnobDebugLogs.Value()) {
-            OS_THREAD_ID tid = PIN_GetTid();
-            TraceFile
-                << "[DEBUG] TID:" << tid << " - "
-                << "RBP VALUE: " << rbpValue << std::endl;
+            ADDRINT heapAlocatedPointer = 0;
+            // Get pointer to variable in stack
+            ADDRINT trueOffset = var_offset - sixteenBytes;
+            ADDRINT varInStack = rbpValue - trueOffset;
 
-            TraceFile << "[DEBUG] memory instruction over var of interest ";
-            TraceFile << "with varLowADDR " << varLowADDR << "and varHighADDR " << varHighADDR << std::endl;
+            PIN_SafeCopy(&heapAlocatedPointer, (void *)varInStack, sizeof(heapAlocatedPointer));
+
+            if(KnobDebugLogs.Value()) {
+                TraceFile << "[DEBUG] Addr in stack (0x" << varInStack << ") : " << heapAlocatedPointer << std::endl;
+            }
+
+            threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, tid));
+
+            std::map<ADDRINT, ADDRINT>* sizeByPointer = threadData->sizeByPointer;
+
+            auto it = sizeByPointer->find(heapAlocatedPointer);
+
+            if (it == sizeByPointer->end()) {
+                if (KnobDebugLogs.Value()) {
+                    TraceFile << "[DEBUG] Pointer 0x" << heapAlocatedPointer << " not in map " << std::endl;
+                }
+                // Not found
+                return;
+            }
+
+            ADDRINT varSizeInBytes = it->second;
+
+            if(KnobDebugLogs.Value()) {
+                TraceFile << "with size 0x" << varSizeInBytes << std::endl;
+            }
+
+            TraceFile << "" << std::endl;
+
+            if (addr < heapAlocatedPointer || (heapAlocatedPointer+varSizeInBytes) <= addr)
+                return;
+
+        } else {
+            ADDRINT trueOffset = var_offset - sixteenBytes;
+            ADDRINT varLowADDR = rbpValue - trueOffset;
+            ADDRINT varHighADDR = rbpValue - trueOffset + var_byte_size;
+
+            if (varLowADDR > addr || varHighADDR <= addr)
+                return;
+
+            if (KnobDebugLogs.Value()) {
+                OS_THREAD_ID tid = PIN_GetTid();
+                TraceFile
+                    << "[DEBUG] TID:" << tid << " - "
+                    << "RBP VALUE: " << rbpValue << std::endl;
+
+                TraceFile << "[DEBUG] memory instruction over var of interest ";
+                TraceFile << "with varLowADDR " << varLowADDR << "and varHighADDR " << varHighADDR << std::endl;
+            }
         }
 
-        if (logfilterlive && ExcludedAddressLive(ip))
-            return;
+        //if (logfilterlive && ExcludedAddressLive(ip))
+        //    return;
     }
     // test on logfilterlive here to avoid calls when not using live filtering
      else {
         if (logfilterlive && ExcludedAddressLive(ip))
             return;
     }
+
+    UINT8 memdump[256];
 
     PIN_GetLock(&_lock, ip);
     if ((size_t)size > sizeof(memdump))
@@ -608,9 +663,9 @@ static VOID RecordWriteAddrSize(ADDRINT addr, INT32 size, CONTEXT* regContext)
 }
 
 
-static VOID RecordMemWrite(ADDRINT ip)
+static VOID RecordMemWrite(THREADID tid, ADDRINT ip)
 {
-    RecordMem(RegContext, ip, 'W', WriteAddr, WriteSize, false);
+    RecordMem(RegContext, tid, ip, 'W', WriteAddr, WriteSize, false);
 }
 
 /* ================================================================================= */
@@ -633,6 +688,7 @@ VOID Instruction_cb(INS ins, VOID *v)
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordMem,
                 IARG_CONTEXT,
+                IARG_THREAD_ID,
                 IARG_INST_PTR,
                 IARG_UINT32, 'R',
                 IARG_MEMORYREAD_EA,
@@ -646,6 +702,7 @@ VOID Instruction_cb(INS ins, VOID *v)
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordMem,
                 IARG_CONTEXT,
+                IARG_THREAD_ID,
                 IARG_INST_PTR,
                 IARG_UINT32, 'R',
                 IARG_MEMORYREAD2_EA,
@@ -669,6 +726,7 @@ VOID Instruction_cb(INS ins, VOID *v)
             {
                 INS_InsertCall(
                     ins, IPOINT_AFTER, (AFUNPTR)RecordMemWrite,
+                    IARG_THREAD_ID,
                     IARG_INST_PTR,
                     IARG_END);
             }
@@ -676,6 +734,7 @@ VOID Instruction_cb(INS ins, VOID *v)
             {
                 INS_InsertCall(
                     ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)RecordMemWrite,
+                    IARG_THREAD_ID,
                     IARG_INST_PTR,
                     IARG_END);
             }
@@ -697,34 +756,61 @@ VOID Instruction_cb(INS ins, VOID *v)
 /* Routine tracing functions                                             */
 /* ===================================================================== */
 
-void FreeBefore(THREADID tid, ADDRINT pointerToFree){
+bool IsWithinMainExec(ADDRINT addr) {
+    if (KnobDebugLogs.Value()) {
+        TraceFile << "[DEBUG] Address within main exec 0x" << addr << std::endl;
+    }
+
+    return (main_begin <= addr && addr <= main_end);
+}
+
+void FreeBefore(THREADID tid, ADDRINT pointerToFree, ADDRINT returnPointer){
+    if (!IsWithinMainExec(returnPointer)) {
+        return;
+    }
+
     threadData_t* threadData = static_cast<threadData_t*>(PIN_GetThreadData(tlsKey, tid));
     int i = 0;
     for (std::map<ADDRINT, ADDRINT>::iterator it = threadData->sizeByPointer->begin(); it != threadData->sizeByPointer->end(); it++) {
         TraceFile << "Thread FREE" << tid << "- MapElement " << i << " of map is:" << it->second << std::endl;
-        if ((it->second) == pointerToFree)
+        if ((it->first) == pointerToFree)
         {
             threadData->sizeByPointer->erase(it);
-            TraceFile << "Thread " << tid << " freed " << pointerToFree << std::endl;
+            TraceFile << "Thread " << tid << " freed " << pointerToFree << " with 0x" << it->second << " bytes" << std::endl;
             break;
         }
         i++;
     }
 }
 
-void MallocBefore(THREADID tid, ADDRINT size){
+void MallocBefore(THREADID tid, ADDRINT size, ADDRINT returnPointer){
+    if (!IsWithinMainExec(returnPointer)) {
+        return;
+    }
+
+    if (KnobDebugLogs.Value()) {
+        TraceFile << "[DEBUG] [TID:" << tid << "][Malloc before] asked for 0x" << size << " bytes of memory"<< std::endl;
+    }
     
     threadData_t* threadData = static_cast<threadData_t*>(PIN_GetThreadData(tlsKey, tid));
     threadData->sizeAsked = size;
 
-    TraceFile << "Thread " << tid << " asked for 0x" << size << " bytes of memory" << std::endl;
+    // TraceFile << "Thread " << tid << " asked for 0x" << size << " bytes of memory" << std::endl;
 }
 
-void MallocAfter(THREADID tid, ADDRINT memPointer) {
+void MallocAfter(THREADID tid, ADDRINT memPointer, ADDRINT returnPointer) {
+    if (!IsWithinMainExec(returnPointer)) {
+        return;
+    }
+
+    if (KnobDebugLogs.Value()) {
+        TraceFile << "[DEBUG] [TID:" << tid << "][Malloc after] got 0x" << memPointer << std::endl;
+    }
+
     threadData_t* threadData = static_cast<threadData_t*>(PIN_GetThreadData(tlsKey, tid));
     threadData->sizeByPointer->insert({memPointer, threadData->sizeAsked});
 
-    TraceFile << "Thread " << tid << " got pointer 0x" << memPointer << " with " << threadData->sizeAsked << " bytes of memory" << std::endl;
+    TraceFile << "Thread " << tid << " got pointer 0x" << memPointer << " with 0x" << threadData->sizeAsked << " bytes of memory" << std::endl;
 }
 
 //void MallocAfter(ADDRINT memPointer) {
@@ -758,10 +844,11 @@ void ImageLoad_cb(IMG Img, void *v)
 
         // Instrument malloc() to print the input argument value and the return value.
         RTN_InsertCall(mallocRtn, IPOINT_BEFORE, (AFUNPTR)MallocBefore,
-                       IARG_THREAD_ID, IARG_FUNCARG_ENTRYPOINT_VALUE, 0,// IARG_RETURN_IP,
+                       IARG_THREAD_ID, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_RETURN_IP,
                        IARG_END);
         RTN_InsertCall(mallocRtn, IPOINT_AFTER, (AFUNPTR)MallocAfter,
-                       IARG_THREAD_ID, IARG_FUNCRET_EXITPOINT_VALUE, IARG_END);
+                       IARG_THREAD_ID, IARG_FUNCRET_EXITPOINT_VALUE, IARG_RETURN_IP, 
+                       IARG_END);
         // RTN_InsertCall(mallocRtn, IPOINT_AFTER, (AFUNPTR)MallocAfter,
         //                IARG_FUNCRET_EXITPOINT_VALUE, IARG_END);
 
@@ -775,7 +862,7 @@ void ImageLoad_cb(IMG Img, void *v)
         RTN_Open(freeRtn);
         // Instrument free() to print the input argument value.
         RTN_InsertCall(freeRtn, IPOINT_BEFORE, (AFUNPTR)FreeBefore,
-                       IARG_THREAD_ID, IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+                       IARG_THREAD_ID, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_RETURN_IP,
                        IARG_END);
         RTN_Close(freeRtn);
     }
@@ -1066,9 +1153,9 @@ void LogBasicBlock(ADDRINT addr, UINT32 size)
     void ThreadStart_cb(THREADID threadIndex, CONTEXT *ctxt, INT32 flags, VOID *v)
     {
         PIN_GetLock(&_lock, threadIndex + 1);
-        threadData_t* sizeOfLastMalloc = new threadData_t;
-        if (PIN_SetThreadData(tlsKey, sizeOfLastMalloc, threadIndex) == FALSE) {
-            std::cerr << "PIN_SetThreadData sizeOfLastMalloc failed" << std::endl;
+        threadData_t* allocatedVariables = new threadData_t;
+        if (PIN_SetThreadData(tlsKey, allocatedVariables, threadIndex) == FALSE) {
+            std::cerr << "PIN_SetThreadData allocatedVariables failed" << std::endl;
             PIN_ExitProcess(1);
         }
 
@@ -1205,17 +1292,19 @@ void LogBasicBlock(ADDRINT addr, UINT32 size)
         std::string command = "readelf -wi " + std::string(argv[argc-1]) + " > " + readelfTxtFile;
         executeCommand(command);
 
-        filter_by_dwarf = var_dwarf_die_id > "0" && func_dwarf_die_id > "0";
+        filter_by_dwarf = func_dwarf_die_id > "0" && var_dwarf_die_id > "0";
         if (filter_by_dwarf) {
         #if !defined(TARGET_IA32E)
-            std::cerr << "TARGET IA32e not defined and can't access register data for PIN CONTEXT" << std::endl;
+            std::cerr << "TARGET IA32e not defined and can't access register data (particularly RBP) for PIN CONTEXT" << std::endl;
             return 1;
         #endif
             var_byte_size = KnobVarByteSize.Value();
 
-            TraceFile << "Using DWARF Function DIE ID: " << func_dwarf_die_id << std::endl;
-            TraceFile << "Using DWARF Variable DIE ID: " << var_dwarf_die_id;
-            TraceFile << " with size " << std::dec << var_byte_size << std::endl;
+            if (KnobDebugLogs.Value()) {
+                TraceFile << "Using DWARF Function DIE ID: " << func_dwarf_die_id << std::endl;
+                TraceFile << "Using DWARF Variable DIE ID: " << var_dwarf_die_id;
+                TraceFile << " with size " << std::dec << var_byte_size << std::endl;
+            }
 
             std::string command = "/home/mgiampaolo/Desktop/tesis/prueba/tool fbreg " + var_dwarf_die_id + " " + readelfTxtFile;
             std::string fbreg_offset = executeCommand(command);
@@ -1230,8 +1319,10 @@ void LogBasicBlock(ADDRINT addr, UINT32 size)
                 std::cerr << "ERR: failed getting lowpc and highpc address of func" << std::endl;
             }
 
-            TraceFile << "FBREG OFFSET: " << fbreg_offset << std::endl;
-            TraceFile << "LOWPC,HIGHPC addr: " << low_and_high_pc << std::endl;
+            if (KnobDebugLogs.Value()) {
+                TraceFile << "FBREG OFFSET: " << fbreg_offset << std::endl;
+                TraceFile << "LOWPC,HIGHPC addr: " << low_and_high_pc << std::endl;
+            }
 
             // PIN Forces to compile without try catch, so if no numbers are returned kaboom
             func_offset = std::stoi(lowAndHigh[0]);
