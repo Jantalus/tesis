@@ -57,7 +57,6 @@
 // This avoids the false sharing problem.
 // #define PADSIZE 56 // 64 byte line size: 64-8 
 
-// Ver despues que onda esta falopeada
 class threadData_t {
     public:
         ADDRINT sizeAsked;
@@ -737,8 +736,7 @@ VOID Instruction_cb(INS ins, VOID *v)
 
     if (KnobLogMem.Value()) {
 
-        if (INS_IsMemoryRead(ins))
-        {
+        if (INS_IsMemoryRead(ins)) {
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordMem,
                 IARG_CONTEXT,
@@ -751,8 +749,7 @@ VOID Instruction_cb(INS ins, VOID *v)
                 IARG_END);
         }
 
-        if (INS_HasMemoryRead2(ins))
-        {
+        if (INS_HasMemoryRead2(ins)) {
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordMem,
                 IARG_CONTEXT,
@@ -767,8 +764,7 @@ VOID Instruction_cb(INS ins, VOID *v)
 
         // instruments stores using a predicated call, i.e.
         // the call happens iff the store will be actually executed
-        if (INS_IsMemoryWrite(ins))
-        {
+        if (INS_IsMemoryWrite(ins)) {
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordWriteAddrSize,
                 IARG_MEMORYWRITE_EA,
@@ -776,16 +772,14 @@ VOID Instruction_cb(INS ins, VOID *v)
                 IARG_CONTEXT,
                 IARG_END);
 
-            if (INS_HasFallThrough(ins))
-            {
+            if (INS_HasFallThrough(ins)) {
                 INS_InsertCall(
                     ins, IPOINT_AFTER, (AFUNPTR)RecordMemWrite,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
                     IARG_END);
             }
-            if (INS_IsControlFlow(ins))
-            {
+            if (INS_IsControlFlow(ins)) {
                 INS_InsertCall(
                     ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)RecordMemWrite,
                     IARG_THREAD_ID,
@@ -795,7 +789,8 @@ VOID Instruction_cb(INS ins, VOID *v)
 
         }
     }
-    if (KnobLogIns.Value() && !filter_by_dwarf) {
+
+    if (KnobLogIns.Value()) { // && !filter_by_dwarf) { TODO: por que filtraba por esto?
         std::string* disass = new std::string(INS_Disassemble(ins));
         INS_InsertCall(
             ins, IPOINT_BEFORE, (AFUNPTR)printInst,
@@ -909,7 +904,7 @@ void ImageLoad_cb(IMG Img, void *v)
     {
         RTN_Open(mallocRtn);
 
-        // Instrument malloc() to print the input argument value and the return value.
+        // Instrument malloc() to save the pointer and bytes asked by the thread
         RTN_InsertCall(mallocRtn, IPOINT_BEFORE, (AFUNPTR)MallocBefore,
                        IARG_THREAD_ID, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_RETURN_IP,
                        IARG_END);
