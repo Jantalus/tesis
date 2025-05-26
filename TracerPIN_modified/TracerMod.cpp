@@ -120,10 +120,11 @@ struct VariableMemoryLocation {
     VariableMemoryLocation(ADDRINT start, ADDRINT end, THREADID tid) : startAddress(start), endAdress(end), ownerThread(tid) {}
 };
 
+PIN_LOCK _lockvarreg;
 std::vector<VariableMemoryLocation> varRegions;
 
 void printVarRegions(std::vector<VariableMemoryLocation> regions) {
-    TraceFile << "[";
+    TraceFile << regions.size() << " elements"<< "[";
     for (const auto& varRegion: regions) {
         TraceFile << "<0x" << varRegion.startAddress << ", 0x" << varRegion.endAdress << "> ";
     }
@@ -172,13 +173,13 @@ LogTypeType LogType=HUMAN;
 KNOB<std::string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool",
                             "o", "trace-full-info.txt", "specify trace file name");
 KNOB<BOOL> KnobLogIns(KNOB_MODE_WRITEONCE, "pintool",
-                      "i", "1", "log all instructions");
+                      "i", "0", "log all instructions");
 KNOB<BOOL> KnobLogMem(KNOB_MODE_WRITEONCE, "pintool",
                       "m", "1", "log all memory accesses");
 KNOB<BOOL> KnobLogBB(KNOB_MODE_WRITEONCE, "pintool",
-                     "b", "1", "log all basic blocks");
+                     "b", "0", "log all basic blocks");
 KNOB<BOOL> KnobLogCall(KNOB_MODE_WRITEONCE, "pintool",
-                       "c", "1", "log all calls");
+                       "c", "0", "log all calls");
 KNOB<BOOL> KnobLogCallArgs(KNOB_MODE_WRITEONCE, "pintool",
                            "C", "0", "log all calls with their first three args");
 KNOB<std::string> KnobLogFilter(KNOB_MODE_WRITEONCE, "pintool",
@@ -199,8 +200,8 @@ KNOB<std::string> KnobFunctionDwarfDIE_ID(KNOB_MODE_WRITEONCE, "pintool",
                          "fdid", "0", "Function DWARF DIE ID, obtained from de debug_info section. Recommended to use readelf -wi <executable> \n Default (0) means no use of this filter. Use with <PONER ACA SIZE IN BYTES Y FUNC OPT>");
 KNOB<BOOL> KnobDiscriminateThread(KNOB_MODE_WRITEONCE, "pintool",
                            "td", "0", "Discriminate which thread read/writes the variable and who owns it");
-KNOB<BOOL> KnobExcludeWritesOutisdeMain(KNOB_MODE_WRITEONCE, "pintool",
-                           "excl", "1", "Trace writes on variable outside main executable, ex: libc");
+KNOB<BOOL> KnobExcludeAddressesOutsideMain(KNOB_MODE_WRITEONCE, "pintool",
+                           "excl", "1", "Exclude instructions to instrment outside main executable, ex: libc");
 KNOB<BOOL> KnobDebugLogs(KNOB_MODE_WRITEONCE, "pintool",
                            "d", "0", "Add debug logs for reading RBP, and knowing when addresses are filtered because of func, or because of not var of interest");
 
@@ -571,6 +572,10 @@ static VOID RecordMem(CONTEXT* regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
         // Assume that no var size means that we want a dynamically allocated variable
         if (var_byte_size == 0) {
             // DYNAMIC VARIABLE
+
+            threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, tid));
+
+            std::map<ADDRINT, ADDRINT> *sizeByPointer = threadData->sizeByPointer;
             if (IsWithinDwarfFunction(ip)) {
                 if (KnobDebugLogs.Value()) {
                     TraceFile << "[DEBUG] Var byte size is 0, assumed heap allocated variable with ";
@@ -584,10 +589,6 @@ static VOID RecordMem(CONTEXT* regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
                     if (r == 'R') { // If reading the pointer, not the heap allocated memory: skip
                         return;
                     }
-
-                    threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, tid));
-
-                    std::map<ADDRINT, ADDRINT> *sizeByPointer = threadData->sizeByPointer;
 
                     ADDRINT heapAllocatedPointer = 0;
 
@@ -609,7 +610,9 @@ static VOID RecordMem(CONTEXT* regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
                     
                     // Append to areas of memory to be traced
                     // we save the <regionOfMemoryOfX>, ThreadThatCreatedX
+                    PIN_GetLock(&_lockvarreg, 0);
                     varRegions.emplace_back(heapAllocatedPointer, (heapAllocatedPointer + varSizeInBytes), tid);
+                    PIN_ReleaseLock(&_lockvarreg);
                     // Region of memory saved. Not writing on the heap allocated memory
 
                     if (KnobDebugLogs.Value()) {
@@ -621,6 +624,8 @@ static VOID RecordMem(CONTEXT* regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
                 }
             }
             // Are you reading or writing another instantiaton of x (var by DwarfID) ?
+
+            PIN_GetLock(&_lockvarreg, 0);
             for (const auto &memoryRegion : varRegions) {
                 if (memoryRegion.startAddress <= addr && addr < memoryRegion.endAdress) {
                     // Reading or writing some memory of an instantiation of x
@@ -628,9 +633,41 @@ static VOID RecordMem(CONTEXT* regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
                     threadOwnerOfX = memoryRegion.ownerThread;
                     found = true;
 
+                    // Also, the address could have been allocated previously
+                    // recursively adding it to the varRegions list.
+                    // But only when we are writing our memory region of interest, when reading we don't care
+                    if (r == 'W') {
+                        ADDRINT writingBytes = 0;
+
+                        PIN_SafeCopy(&writingBytes, (void *)addr, sizeof(writingBytes));
+
+                        auto it = sizeByPointer->find(writingBytes);
+
+                        // Validate if it is a malloced pointer
+                        if (it == sizeByPointer->end()) {
+                            // Not found -> not malloced memory
+                            if (KnobDebugLogs.Value()) {
+                                TraceFile << "[DEBUG] Pointer 0x" << addr << " not in map " << std::endl;
+                            }
+                        } else {
+                            // pointer is from malloc call
+                            ADDRINT varSizeInBytes = it->second;
+                            varRegions.emplace_back(writingBytes, (writingBytes + varSizeInBytes), tid);
+
+                            if (KnobDebugLogs.Value()) {
+                                TraceFile << "[DEBUG] indirect add char - VarRegions ADD x region ";
+                                printVarRegions(varRegions);
+                            }
+                        }
+                    }
+
+
+
                     break;
                 }
             }
+            PIN_ReleaseLock(&_lockvarreg);
+
             if (!found) return;
 
         } else {
@@ -731,7 +768,7 @@ VOID Instruction_cb(INS ins, VOID *v)
 
     // Either by -f -F filters, or by -fdid function lowpc and highpc address
     // excluding ip addresses outside of my function of interest
-    if(ExcludedAddress(ceip) && KnobExcludeWritesOutisdeMain.Value())
+    if(ExcludedAddress(ceip) && KnobExcludeAddressesOutsideMain.Value())
         return;
 
     if (KnobLogMem.Value()) {
@@ -834,6 +871,7 @@ void FreeBefore(THREADID tid, ADDRINT pointerToFree, ADDRINT returnPointer){
         printVarRegions(varRegions);
     }
     // Remove from global sections of memory
+    PIN_GetLock(&_lockvarreg, 0);
     for (auto it = varRegions.begin(); it != varRegions.end();) {
         if (it->startAddress == pointerToFree) {
             it = varRegions.erase(it);
@@ -841,6 +879,7 @@ void FreeBefore(THREADID tid, ADDRINT pointerToFree, ADDRINT returnPointer){
             ++it;
         }
     }
+    PIN_ReleaseLock(&_lockvarreg);
 
     if (KnobDebugLogs.Value()) {
         TraceFile << "[DEBUG] VarRegions after freeing";
