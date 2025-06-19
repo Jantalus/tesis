@@ -68,6 +68,7 @@ Compilado:
 g++ -O0 prueba/dynamic_vs_static/main.cpp -o prueba/read_dwarf_data -L/usr/local/lib -ldwarf
 
 g++ -O0 prueba/dynamic_vs_static/main\ copy\ 2.cpp -g -o prueba/dwarfeame_vector -L/usr/local/lib -ldwarf
+g++ -O0 prueba/dynamic_vs_static/main\ copy\ 2.cpp -g -o prueba/dwarfeame_vector
 
 // Compilado; lectura de info de debug; traceo
 g++ -O0 prueba/dynamic_vs_static/main\ copy\ 2.cpp -g -o prueba/dwarfeame_vector
