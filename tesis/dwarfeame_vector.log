@@ -12,10 +12,10 @@
 [*]    7: /usr/local/bin/obj-ia32/TracerMod.so
 [*]    8: -td
 [*]    9: 1
-[*]   10: -fdid
-[*]   11: 22df
-[*]   12: -vdid
-[*]   13: 231f
+[*]   10: -fname
+[*]   11: main
+[*]   12: -vname
+[*]   13: matrix
 [*]   14: -excl
 [*]   15: 0
 [*]   16: -o
@@ -32,21 +32,21 @@
 [T]         1 Thread 0x100000000 started. Flags: 0x0
 [-] Loaded module: /usr/lib/libstdc++.so.6
 [!] Filtered /usr/lib/libstdc++.so.6
-[-] Module base: 0x7fffe4400000
-[-] Module end:  0x7fffe4693047
+[-] Module base: 0x7fffe3a00000
+[-] Module end:  0x7fffe3c93047
 [-] Loaded module: /usr/lib/libm.so.6
 [!] Filtered /usr/lib/libm.so.6
-[-] Module base: 0x7fffe4308000
-[-] Module end:  0x7fffe43ff147
+[-] Module base: 0x7fffe3908000
+[-] Module end:  0x7fffe39ff147
 [-] Loaded module: /usr/lib/libgcc_s.so.1
 [!] Filtered /usr/lib/libgcc_s.so.1
-[-] Module base: 0x7fffe479c000
-[-] Module end:  0x7fffe47c81e7
+[-] Module base: 0x7fffe3db5000
+[-] Module end:  0x7fffe3de11e7
 [-] Loaded module: /usr/lib/libc.so.6
 [!] Filtered /usr/lib/libc.so.6
-[-] Module base: 0x7fffe4118000
-[-] Module end:  0x7fffe4307c57
-[W][0][0]         1  0x5555555553f7                                                        0x7fffffffdfc0 size= 8 value=0x000055555556b2b0
+[-] Module base: 0x7fffe3718000
+[-] Module end:  0x7fffe3907c57
+[W][0][0]         1  0x5555555553f7                                                        0x7fffffffe110 size= 8 value=0x000055555556b2b0
 [W][0][0]         2  0x55555555542b                                                        0x55555556b2b0 size= 8 value=0x000055555556b2d0
 [W][0][0]         3  0x55555555542b                                                        0x55555556b2b8 size= 8 value=0x000055555556b2f0
 [W][0][0]         4  0x55555555542b                                                        0x55555556b2c0 size= 8 value=0x000055555556b310
