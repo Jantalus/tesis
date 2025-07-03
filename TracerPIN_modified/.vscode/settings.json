@@ -98,7 +98,14 @@
         "stdfloat": "cpp",
         "stop_token": "cpp",
         "text_encoding": "cpp",
-        "thread": "cpp"
+        "thread": "cpp",
+        "__functional_03": "cpp",
+        "__functional_base_03": "cpp",
+        "__memory": "cpp",
+        "forward_list": "cpp",
+        "ranges": "cpp",
+        "byte": "cpp",
+        "util": "cpp"
     },
     "C_Cpp.errorSquiggles": "disabled"
 }
