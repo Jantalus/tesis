@@ -36,6 +36,7 @@
 #include <chrono> // for high resolution timing
 #include <string> // for string operations
 #include <cctype> // used to validate string inputs
+#include <thread> // for thread functionality
 
 // For string split of lowpc,higpc
 #include <vector>
@@ -56,6 +57,54 @@
 #define MALLOC "malloc"
 #define FREE "free"
 #endif
+
+/* ===================================================================== */
+/* Commandline Switches */
+/* ===================================================================== */
+
+KNOB<std::string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool",
+                                 "o", "trace-full-info.txt", "specify trace file name");
+KNOB<BOOL> KnobLogIns(KNOB_MODE_WRITEONCE, "pintool",
+                      "i", "0", "log all instructions");
+KNOB<BOOL> KnobLogMem(KNOB_MODE_WRITEONCE, "pintool",
+                      "m", "1", "log all memory accesses");
+KNOB<BOOL> KnobLogBB(KNOB_MODE_WRITEONCE, "pintool",
+                     "b", "0", "log all basic blocks");
+KNOB<BOOL> KnobLogCall(KNOB_MODE_WRITEONCE, "pintool",
+                       "c", "0", "log all calls");
+KNOB<BOOL> KnobLogCallArgs(KNOB_MODE_WRITEONCE, "pintool",
+                           "C", "0", "log all calls with their first three args");
+KNOB<std::string> KnobLogFilter(KNOB_MODE_WRITEONCE, "pintool",
+                                "f", "1", "(0) no filter (1) filter system libraries (2) filter all but main exec (0x400000-0x410000) trace only specified address range");
+KNOB<std::string> KnobLogFilterLive(KNOB_MODE_WRITEONCE, "pintool",
+                                    "F", "0", "(0) no live filter (0x400000:0x410000) use addresses as start:stop live filter");
+KNOB<INT> KnobLogFilterLiveN(KNOB_MODE_WRITEONCE, "pintool",
+                             "n", "0", "which occurence to log, 0=all (only for -F start:stop filter)");
+// KNOB<std::string> KnobLogType(KNOB_MODE_WRITEONCE, "pintool",
+                              // "t", "human", "log type: human/sqlite");
+KNOB<BOOL> KnobQuiet(KNOB_MODE_WRITEONCE, "pintool",
+                     "q", "0", "be quiet under normal conditions");
+KNOB<std::string> KnobVariableDwarfDIE_ID(KNOB_MODE_WRITEONCE, "pintool",
+                                          "vdid", "0", "Variable DWARF DIE ID, obtained from de debug_info section. Recommended to use readelf -wi <executable> \n Default (0) means no use of this filter. Use with <PONER ACA SIZE IN BYTES Y FUNC OPT>");
+KNOB<std::string> KnobVariableName(KNOB_MODE_WRITEONCE, "pintool",
+                                   "vname", "", "Variable name, will be used to lookup in the dwarf debug data. \n Default (0) means no use of this filter. Use with <PONER ACA SIZE IN BYTES Y FUNC OPT>");
+KNOB<UINT64> KnobVarByteSize(KNOB_MODE_WRITEONCE, "pintool",
+                             "vs", "0", "Variable to trace size in Bytes. Used with -vdid option");
+KNOB<std::string> KnobFunctionDwarfDIE_ID(KNOB_MODE_WRITEONCE, "pintool",
+                                          "fdid", "0", "Function DWARF DIE ID, obtained from de debug_info section. Recommended to use readelf -wi <executable> \n Default (0) means no use of this filter. Use with <PONER ACA SIZE IN BYTES Y FUNC OPT>");
+KNOB<std::string> KnobFunctionName(KNOB_MODE_WRITEONCE, "pintool",
+                                   "fname", "", "Function  name, will be used to lookup in the dwarf debug data. \n Default (0) means no use of this filter. Use with <PONER ACA SIZE IN BYTES Y FUNC OPT>");
+KNOB<BOOL> KnobDiscriminateThread(KNOB_MODE_WRITEONCE, "pintool",
+                                  "td", "0", "Discriminate which thread read/writes the variable and who owns it");
+KNOB<BOOL> KnobExcludeAddressesOutsideMain(KNOB_MODE_WRITEONCE, "pintool",
+                                           "excl", "1", "Exclude instructions to instrment outside main executable, ex: libc");
+KNOB<BOOL> KnobDebugLogs(KNOB_MODE_WRITEONCE, "pintool",
+                         "d", "0", "Add debug logs for reading RBP, and knowing when addresses are filtered because of func, or because of not var of interest");
+KNOB<BOOL> KnobEnableFileOutput(KNOB_MODE_WRITEONCE, "pintool",
+                                "file", "1", "enable/disable file output (1=enable, 0=disable)");
+KNOB<BOOL> KnobEnableRecursiveAllocTracking(KNOB_MODE_WRITEONCE, "pintool",
+                                "recursive", "1", "enable/disable recursive tracking of malloced pointers (1=enable, 0=disable)");
+
 
 // Force each thread's data to be in its own data cache line so that
 // multiple threads do not contend for the same data cache line.
@@ -105,8 +154,148 @@ struct MemoryTraceEntry
 };
 
 const size_t MAX_BUFFER_ENTRIES = 1'000'000; // Fixed size for buffer
-MemoryTraceEntry traceBuffer[MAX_BUFFER_ENTRIES];
-size_t traceBufferIndex = 0;
+MemoryTraceEntry traceBuffer1[MAX_BUFFER_ENTRIES];
+MemoryTraceEntry traceBuffer2[MAX_BUFFER_ENTRIES];
+
+// Buffer management structure
+struct BufferInfo {
+    MemoryTraceEntry* buffer;
+    size_t index;
+    bool inUse;  // true if being written to file
+    PIN_LOCK lock;
+    
+    BufferInfo(MemoryTraceEntry* buf) : buffer(buf), index(0), inUse(false) {
+        PIN_InitLock(&lock);
+    }
+};
+
+BufferInfo buffer1(traceBuffer1);
+BufferInfo buffer2(traceBuffer2);
+BufferInfo* currentBuffer = &buffer1;
+BufferInfo* writeBuffer = nullptr;
+
+// Lock for file writing operations
+PIN_LOCK fileWriteLock;
+
+// Structure to pass buffer information to write thread
+struct WriteBufferArgs {
+    BufferInfo* bufferInfo;
+    size_t bufferSize;
+};
+
+std::string FormatTraceEntry2(const MemoryTraceEntry& entry) {
+    // Preallocate string with estimated capacity
+    std::string result;
+    result.reserve(64); // Adjust based on expected output size (e.g., operation, threads, address, memdump)
+
+    // Hex conversion lookup table
+    static const char hex[] = "0123456789abcdef";
+
+    // Append operation
+    result += '[';
+    result += entry.operation;
+    result += ']';
+
+    // Append thread info if enabled
+    if (KnobDiscriminateThread.Value()) {
+        result += '[';
+        result += std::to_string(entry.threadWriter);
+        result += "][";
+        result += std::to_string(entry.threadOwner);
+        result += ']';
+    }
+
+    // Append address (convert to hex manually for efficiency)
+    result += "0x";
+    char addr_buf[17]; // Enough for 64-bit address (16 hex digits + null)
+    addr_buf[16] = '\0';
+    uintptr_t addr = reinterpret_cast<uintptr_t>(entry.address);
+    for (int i = 15; i >= 0; --i) {
+        addr_buf[i] = hex[addr & 0xF];
+        addr >>= 4;
+    }
+    result += addr_buf;
+    result += ' ';
+
+    // Append memdump based on size
+    switch (entry.size) {
+        case 1: {
+            result += "0x";
+            UINT8 val = entry.memdump[0];
+            result += hex[(val >> 4) & 0xF];
+            result += hex[val & 0xF];
+            break;
+        }
+        case 2: {
+            result += "0x";
+            UINT16 val = *reinterpret_cast<const UINT16*>(entry.memdump);
+            for (int i = 3; i >= 0; --i) {
+                result += hex[(val >> (i * 4)) & 0xF];
+            }
+            break;
+        }
+        case 4: {
+            result += "0x";
+            UINT32 val = *reinterpret_cast<const UINT32*>(entry.memdump);
+            for (int i = 7; i >= 0; --i) {
+                result += hex[(val >> (i * 4)) & 0xF];
+            }
+            break;
+        }
+        case 8: {
+            result += "0x";
+            UINT64 val = *reinterpret_cast<const UINT64*>(entry.memdump);
+            for (int i = 15; i >= 0; --i) {
+                result += hex[(val >> (i * 4)) & 0xF];
+            }
+            break;
+        }
+        default: {
+            for (INT32 j = 0; j < entry.size; ++j) {
+                result += " ";
+                UINT8 val = entry.memdump[j];
+                result += hex[(val >> 4) & 0xF];
+                result += hex[val & 0xF];
+            }
+            break;
+        }
+    }
+
+    result += '\n';
+    return result;
+}
+
+// Thread function to write buffer to file
+void WriteBufferToFile(void* arg)
+{
+    // Extract buffer info from argument
+    WriteBufferArgs* args = static_cast<WriteBufferArgs*>(arg);
+    BufferInfo* bufferInfo = args->bufferInfo;
+    size_t bufferSize = args->bufferSize;
+    
+    PIN_GetLock(&fileWriteLock, 0);
+    
+    // Bulk write optimization - build all data in memory first
+    std::stringstream bulkData; 
+    for (size_t i = 0; i < bufferSize; i++) {
+        const MemoryTraceEntry& entry = bufferInfo->buffer[i];
+        bulkData << FormatTraceEntry2(entry);
+    }
+    
+    // Single file write operation
+    TraceFile << bulkData.str();
+    
+    PIN_ReleaseLock(&fileWriteLock);
+    
+    // Mark buffer as available again
+    PIN_GetLock(&bufferInfo->lock, 0);
+    bufferInfo->inUse = false;
+    bufferInfo->index = 0;  // Reset index for next use
+    PIN_ReleaseLock(&bufferInfo->lock);
+    
+    // Clean up the argument structure
+    delete args;
+}
 
 // Helper function to check if we should write to file
 inline bool ShouldWriteToFile() {
@@ -320,53 +509,6 @@ public:
 // Global timing instance
 static FunctionTimer *g_timer = nullptr;
 */
-
-/* ===================================================================== */
-/* Commandline Switches */
-/* ===================================================================== */
-
-KNOB<std::string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool",
-                                 "o", "trace-full-info.txt", "specify trace file name");
-KNOB<BOOL> KnobLogIns(KNOB_MODE_WRITEONCE, "pintool",
-                      "i", "0", "log all instructions");
-KNOB<BOOL> KnobLogMem(KNOB_MODE_WRITEONCE, "pintool",
-                      "m", "1", "log all memory accesses");
-KNOB<BOOL> KnobLogBB(KNOB_MODE_WRITEONCE, "pintool",
-                     "b", "0", "log all basic blocks");
-KNOB<BOOL> KnobLogCall(KNOB_MODE_WRITEONCE, "pintool",
-                       "c", "0", "log all calls");
-KNOB<BOOL> KnobLogCallArgs(KNOB_MODE_WRITEONCE, "pintool",
-                           "C", "0", "log all calls with their first three args");
-KNOB<std::string> KnobLogFilter(KNOB_MODE_WRITEONCE, "pintool",
-                                "f", "1", "(0) no filter (1) filter system libraries (2) filter all but main exec (0x400000-0x410000) trace only specified address range");
-KNOB<std::string> KnobLogFilterLive(KNOB_MODE_WRITEONCE, "pintool",
-                                    "F", "0", "(0) no live filter (0x400000:0x410000) use addresses as start:stop live filter");
-KNOB<INT> KnobLogFilterLiveN(KNOB_MODE_WRITEONCE, "pintool",
-                             "n", "0", "which occurence to log, 0=all (only for -F start:stop filter)");
-// KNOB<std::string> KnobLogType(KNOB_MODE_WRITEONCE, "pintool",
-                              // "t", "human", "log type: human/sqlite");
-KNOB<BOOL> KnobQuiet(KNOB_MODE_WRITEONCE, "pintool",
-                     "q", "0", "be quiet under normal conditions");
-KNOB<std::string> KnobVariableDwarfDIE_ID(KNOB_MODE_WRITEONCE, "pintool",
-                                          "vdid", "0", "Variable DWARF DIE ID, obtained from de debug_info section. Recommended to use readelf -wi <executable> \n Default (0) means no use of this filter. Use with <PONER ACA SIZE IN BYTES Y FUNC OPT>");
-KNOB<std::string> KnobVariableName(KNOB_MODE_WRITEONCE, "pintool",
-                                   "vname", "", "Variable name, will be used to lookup in the dwarf debug data. \n Default (0) means no use of this filter. Use with <PONER ACA SIZE IN BYTES Y FUNC OPT>");
-KNOB<UINT64> KnobVarByteSize(KNOB_MODE_WRITEONCE, "pintool",
-                             "vs", "0", "Variable to trace size in Bytes. Used with -vdid option");
-KNOB<std::string> KnobFunctionDwarfDIE_ID(KNOB_MODE_WRITEONCE, "pintool",
-                                          "fdid", "0", "Function DWARF DIE ID, obtained from de debug_info section. Recommended to use readelf -wi <executable> \n Default (0) means no use of this filter. Use with <PONER ACA SIZE IN BYTES Y FUNC OPT>");
-KNOB<std::string> KnobFunctionName(KNOB_MODE_WRITEONCE, "pintool",
-                                   "fname", "", "Function  name, will be used to lookup in the dwarf debug data. \n Default (0) means no use of this filter. Use with <PONER ACA SIZE IN BYTES Y FUNC OPT>");
-KNOB<BOOL> KnobDiscriminateThread(KNOB_MODE_WRITEONCE, "pintool",
-                                  "td", "0", "Discriminate which thread read/writes the variable and who owns it");
-KNOB<BOOL> KnobExcludeAddressesOutsideMain(KNOB_MODE_WRITEONCE, "pintool",
-                                           "excl", "1", "Exclude instructions to instrment outside main executable, ex: libc");
-KNOB<BOOL> KnobDebugLogs(KNOB_MODE_WRITEONCE, "pintool",
-                         "d", "0", "Add debug logs for reading RBP, and knowing when addresses are filtered because of func, or because of not var of interest");
-KNOB<BOOL> KnobEnableFileOutput(KNOB_MODE_WRITEONCE, "pintool",
-                                "file", "1", "enable/disable file output (1=enable, 0=disable)");
-KNOB<BOOL> KnobEnableRecursiveAllocTracking(KNOB_MODE_WRITEONCE, "pintool",
-                                "recursive", "1", "enable/disable recursive tracking of malloced pointers (1=enable, 0=disable)");
 
 /* ============================================================================= */
 /* Intel PIN (3.7) is missing implementations of many C functions, we implement  */
@@ -619,87 +761,6 @@ std::string FormatTraceEntry(const MemoryTraceEntry& entry)
     return ss.str();
 }
 
-std::string FormatTraceEntry2(const MemoryTraceEntry& entry) {
-    // Preallocate string with estimated capacity
-    std::string result;
-    result.reserve(64); // Adjust based on expected output size (e.g., operation, threads, address, memdump)
-
-    // Hex conversion lookup table
-    static const char hex[] = "0123456789abcdef";
-
-    // Append operation
-    result += '[';
-    result += entry.operation;
-    result += ']';
-
-    // Append thread info if enabled
-    if (KnobDiscriminateThread.Value()) {
-        result += '[';
-        result += std::to_string(entry.threadWriter);
-        result += "][";
-        result += std::to_string(entry.threadOwner);
-        result += ']';
-    }
-
-    // Append address (convert to hex manually for efficiency)
-    result += "0x";
-    char addr_buf[17]; // Enough for 64-bit address (16 hex digits + null)
-    addr_buf[16] = '\0';
-    uintptr_t addr = reinterpret_cast<uintptr_t>(entry.address);
-    for (int i = 15; i >= 0; --i) {
-        addr_buf[i] = hex[addr & 0xF];
-        addr >>= 4;
-    }
-    result += addr_buf;
-    result += ' ';
-
-    // Append memdump based on size
-    switch (entry.size) {
-        case 1: {
-            result += "0x";
-            UINT8 val = entry.memdump[0];
-            result += hex[(val >> 4) & 0xF];
-            result += hex[val & 0xF];
-            break;
-        }
-        case 2: {
-            result += "0x";
-            UINT16 val = *reinterpret_cast<const UINT16*>(entry.memdump);
-            for (int i = 3; i >= 0; --i) {
-                result += hex[(val >> (i * 4)) & 0xF];
-            }
-            break;
-        }
-        case 4: {
-            result += "0x";
-            UINT32 val = *reinterpret_cast<const UINT32*>(entry.memdump);
-            for (int i = 7; i >= 0; --i) {
-                result += hex[(val >> (i * 4)) & 0xF];
-            }
-            break;
-        }
-        case 8: {
-            result += "0x";
-            UINT64 val = *reinterpret_cast<const UINT64*>(entry.memdump);
-            for (int i = 15; i >= 0; --i) {
-                result += hex[(val >> (i * 4)) & 0xF];
-            }
-            break;
-        }
-        default: {
-            for (INT32 j = 0; j < entry.size; ++j) {
-                result += " ";
-                UINT8 val = entry.memdump[j];
-                result += hex[(val >> 4) & 0xF];
-                result += hex[val & 0xF];
-            }
-            break;
-        }
-    }
-
-    result += '\n';
-    return result;
-}
 
 // Aux function to add memory trace entry to buffer and flush when full
 void AddToTraceBuffer(THREADID threadOwner, THREADID threadWriter, ADDRINT address, INT32 size, UINT8* memdump, CHAR operation, bool isPrefetch)
@@ -709,38 +770,61 @@ void AddToTraceBuffer(THREADID threadOwner, THREADID threadWriter, ADDRINT addre
         return;
     }
     
-    // Add entry to buffer
-    traceBuffer[traceBufferIndex].threadOwner = threadOwner;
-    traceBuffer[traceBufferIndex].threadWriter = threadWriter;
-    traceBuffer[traceBufferIndex].address = address;
-    traceBuffer[traceBufferIndex].size = size;
-    traceBuffer[traceBufferIndex].operation = operation;
+    // Add entry to current buffer
+    currentBuffer->buffer[currentBuffer->index].threadOwner = threadOwner;
+    currentBuffer->buffer[currentBuffer->index].threadWriter = threadWriter;
+    currentBuffer->buffer[currentBuffer->index].address = address;
+    currentBuffer->buffer[currentBuffer->index].size = size;
+    currentBuffer->buffer[currentBuffer->index].operation = operation;
     
     // Copy memdump data
     for (int i = 0; i < size && i < 256; i++) {
-        traceBuffer[traceBufferIndex].memdump[i] = memdump[i];
+        currentBuffer->buffer[currentBuffer->index].memdump[i] = memdump[i];
     }
     
-    traceBufferIndex++;
+    currentBuffer->index++;
     
     // Flush buffer when full
-    if (traceBufferIndex >= MAX_BUFFER_ENTRIES) {
+    if (currentBuffer->index >= MAX_BUFFER_ENTRIES) {
+        // Mark current buffer as in use for writing
+        PIN_GetLock(&currentBuffer->lock, 0);
+        currentBuffer->inUse = true;
+        PIN_ReleaseLock(&currentBuffer->lock);
         
-        // Bulk write optimization - build all data in memory first
-        std::stringstream bulkData; 
-        for (size_t i = 0; i < traceBufferIndex; i++) {
-            const MemoryTraceEntry& entry = traceBuffer[i];
+        writeBuffer = currentBuffer;
+        
+        // Try to switch to the other buffer
+        BufferInfo* newBuffer = (currentBuffer == &buffer1) ? &buffer2 : &buffer1;
+        
+        // Check if the target buffer is available
+        PIN_GetLock(&newBuffer->lock, 0);
+        if (newBuffer->inUse) {
+            // Target buffer is still being written, we need to wait
+            // For now, we'll block until it's available
+            // In a more sophisticated implementation, we could use a condition variable
+            PIN_ReleaseLock(&newBuffer->lock);
             
-            bulkData << FormatTraceEntry2(entry);
+            // Wait for the buffer to become available
+            while (true) {
+                PIN_GetLock(&newBuffer->lock, 0);
+                if (!newBuffer->inUse) {
+                    PIN_ReleaseLock(&newBuffer->lock);
+                    break;
+                }
+                PIN_ReleaseLock(&newBuffer->lock);
+                // Small delay to avoid busy waiting
+                PIN_Sleep(1); // Sleep for 1 millisecond
+            }
         }
         
-        // Single file write operation
-        //TraceFile << "BULK" << std::endl
-        //          << "-------" << std::endl;
-        TraceFile << bulkData.str();
+        // Now switch to the available buffer
+        currentBuffer = newBuffer;
+        currentBuffer->index = 0;
+        PIN_ReleaseLock(&newBuffer->lock);
         
-        // Reset buffer index
-        traceBufferIndex = 0;
+        // Spawn thread to write the full buffer to file
+        WriteBufferArgs* args = new WriteBufferArgs{writeBuffer, MAX_BUFFER_ENTRIES};
+        PIN_SpawnInternalThread(WriteBufferToFile, args, 0, PIN_THREAD_UID(NULL));
     }
 }
 
@@ -1571,18 +1655,26 @@ VOID Fini(INT32 code, VOID *v)
     */
 
     if (enableFileOutput) {
-        // Flush any remaining entries in the buffer using bulk write
-        if (traceBufferIndex > 0) {
+        // Wait for any pending write threads to complete
+        PIN_GetLock(&fileWriteLock, 0);
+        PIN_ReleaseLock(&fileWriteLock);
+        
+        // Wait for both buffers to be available
+        PIN_GetLock(&buffer1.lock, 0);
+        PIN_GetLock(&buffer2.lock, 0);
+        PIN_ReleaseLock(&buffer1.lock);
+        PIN_ReleaseLock(&buffer2.lock);
+        
+        // Flush any remaining entries in the current buffer using bulk write
+        if (currentBuffer->index > 0) {
             std::stringstream bulkData;
-            for (size_t i = 0; i < traceBufferIndex; i++) {
-                const MemoryTraceEntry& entry = traceBuffer[i];
+            for (size_t i = 0; i < currentBuffer->index; i++) {
+                const MemoryTraceEntry& entry = currentBuffer->buffer[i];
                 
                 bulkData << FormatTraceEntry2(entry);
             }
             
             // Single file write operation
-            //TraceFile << "BULK of Fini" << std::endl
-            //          << "-------" << std::endl;
             TraceFile << bulkData.str();
         }
         
@@ -1677,6 +1769,9 @@ int main(int argc, char *argv[])
         std::cerr << "number of already allocated keys reached the MAX_CLIENT_TLS_KEYS limit. Needed for dynamic variables tracing" << std::endl;
         PIN_ExitProcess(1);
     }
+
+    // Initialize the file write lock
+    PIN_InitLock(&fileWriteLock);
 
     // Set the file output flag based on knob value
     enableFileOutput = KnobEnableFileOutput.Value();
