@@ -41,9 +41,6 @@
 // For string split of lowpc,higpc
 #include <vector>
 
-// Include custom stream buffer
-#include "FileFlushStream.h"
-
 #ifndef GIT_DESC
 #define GIT_DESC "(unknown version)"
 #endif // GIT_DESC
@@ -57,6 +54,10 @@
 #define MALLOC "malloc"
 #define FREE "free"
 #endif
+
+
+// Keep strings alive for the lifetime of the run
+static std::vector<std::string> g_ImageNames;
 
 /* ===================================================================== */
 /* Commandline Switches */
@@ -329,6 +330,7 @@ ADDRINT main_begin;
 ADDRINT main_end;
 
 // Extras
+PROTO proto_malloc;
 
 ADDRINT func_offset = 0;
 ADDRINT func_totalbytes = 0;
@@ -871,20 +873,27 @@ static VOID RecordMem(THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size
             std::map<ADDRINT, ADDRINT> *sizeByPointer = threadData->sizeByPointer;
             if (IsWithinDwarfFunction(ip))
             {
-                if (KnobDebugLogs.Value())
-                {
+                ADDRINT sixteenBytes = ADDRINT(16);
+                ADDRINT trueOffset = var_offset + sixteenBytes;
+                ADDRINT varInStack = threadData->rbpCache - trueOffset;
+
+
+                if (KnobDebugLogs.Value()) {
                     if (ShouldWriteToFile()) {
-                        TraceFile << "[DEBUG] Var byte size is 0, assumed heap allocated variable with ";
-                        TraceFile << "DWARF ID " << variable_dwarf_id << std::endl;
+                        TraceFile << std::hex;
+                        TraceFile << "Writing on 0x" << addr << " - "" and varInStack is 0x" << varInStack << std::endl;
+                        TraceFile << std::dec;
                     }
                 }
 
-                ADDRINT sixteenBytes = ADDRINT(16);
-                ADDRINT trueOffset = var_offset - sixteenBytes;
-                ADDRINT varInStack = threadData->rbpCache - trueOffset;
-
-                if (addr == varInStack)
-                { // Operating on x (var by DwarfID)
+                if (addr == varInStack) {
+ 
+                    if (KnobDebugLogs.Value()) {
+                        if (ShouldWriteToFile()) {
+                            TraceFile << "Writing on var in stack" << std::endl;
+                        }
+                    }
+                    // Operating on x (var by DwarfID)
                     if (r == 'R')
                     { // If reading the pointer, not the heap allocated memory: skip
                         return;
@@ -1261,8 +1270,19 @@ void FreeBefore(THREADID tid, ADDRINT pointerToFree, ADDRINT returnPointer)
     }
 }
 
+void MallocBeforeLog(THREADID tid, size_t size, ADDRINT returnIp, const char* imgName) {
+    TraceFile << "[BEFORE] malloc from " << imgName
+              << " size=" << size << std::dec << std::endl; 
+}
+
+void MallocAfterLog(THREADID tid, VOID* retPtr, ADDRINT returnIp, const char* imgName) {
+    TraceFile << "[AFTER] malloc from " << imgName
+              << " returned ptr=" << retPtr << std::dec << std::endl;
+}
+
 void MallocBefore(THREADID tid, ADDRINT size, ADDRINT returnPointer)
 {
+
     if (!IsWithinMainExec(returnPointer))
     {
         return;
@@ -1271,7 +1291,7 @@ void MallocBefore(THREADID tid, ADDRINT size, ADDRINT returnPointer)
     if (KnobDebugLogs.Value())
     {
         if (ShouldWriteToFile()) {
-            TraceFile << "[DEBUG] [TID:" << tid << "][Malloc before] asked for 0x" << size << " bytes of memory" << std::endl;
+            TraceFile << "[DEBUG] [TID:" << tid << "][Malloc before] asked for " << size << " bytes of memory" << std::endl;
         }
     }
 
@@ -1283,6 +1303,13 @@ void MallocBefore(THREADID tid, ADDRINT size, ADDRINT returnPointer)
 
 void MallocAfter(THREADID tid, ADDRINT memPointer, ADDRINT returnPointer)
 {
+    if (KnobDebugLogs.Value())
+    {
+        if (ShouldWriteToFile()) {
+            TraceFile << "[DEBUG] [TID:" << tid << "][Malloc after] got 0x" << memPointer << std::endl;
+        }
+    }
+
     if (!IsWithinMainExec(returnPointer))
     {
         return;
@@ -1302,6 +1329,11 @@ void MallocAfter(THREADID tid, ADDRINT memPointer, ADDRINT returnPointer)
     {
         if (ShouldWriteToFile()) {
             TraceFile << "Thread " << tid << " got pointer 0x" << memPointer << " with 0x" << threadData->sizeAsked << " bytes of memory" << std::endl;
+            TraceFile << "{" << std::endl;
+            for (std::map<ADDRINT, ADDRINT>::iterator it = threadData->sizeByPointer->begin(); it != threadData->sizeByPointer->end(); it++) {
+                TraceFile << it->first << " : " << it -> second << "," << std::endl;
+            }
+            TraceFile << "}" << std::endl;
         }
     }
 }
@@ -1316,7 +1348,16 @@ void SaveRBPAtEntry(THREADID tid, CONTEXT *ctxt)
     if (threadData) {
 #if defined(TARGET_IA32E)
         ADDRINT cleanRbp = PIN_GetContextReg(ctxt, REG_RBP);
-        threadData->rbpCache = cleanRbp - ADDRINT(32); // Dios sabe por que
+        // threadData->rbpCache = cleanRbp - ADDRINT(32); // Previous to libc update, needed 32
+        threadData->rbpCache = cleanRbp - ADDRINT(64); // now with the libc update, need 64
+
+        if (KnobDebugLogs.Value()) {
+            if (ShouldWriteToFile()) {
+                TraceFile << "Clean rbp:" << cleanRbp << std::endl;
+                TraceFile << "rbp - ADDRINT(32):" << cleanRbp - ADDRINT(32) << std::endl;
+                TraceFile << "rbp - ADDRINT(64):" << cleanRbp - ADDRINT(64) << std::endl;
+            }
+        }
 #endif
     }
 }
@@ -1329,6 +1370,52 @@ void SaveRBPAtExit(THREADID tid, CONTEXT *ctxt)
     }
 }
 
+
+// Wrapper for malloc
+VOID* MallocWrapper(THREADID threadid, size_t size, AFUNPTR originalMalloc, const char* imgName, ADDRINT retIp, CONTEXT* ctxt) {
+    // Prepare return value and argument for malloc
+    VOID* ptr = nullptr; // Return value (first argument)
+    size_t arg_size = size; // Argument to malloc
+
+    // Call original malloc using PIN_CallApplicationFunction
+    PIN_CallApplicationFunction(ctxt, threadid, CALLINGSTD_DEFAULT, originalMalloc, nullptr,
+                                PIN_PARG(VOID*), &ptr, // Return value
+                                PIN_PARG(size_t), arg_size, // Argument: size
+                                PIN_PARG_END());
+
+
+    if (KnobDebugLogs.Value()) {
+        if (ShouldWriteToFile()) {
+            TraceFile << "[DEBUG] [TID:" << threadid << "][Malloc Wrapper] asked for " << size << " and got pointer 0x" << ptr << std::endl;
+        }
+    }
+
+    // Consolidated logic: directly insert the malloc pointer and size into the thread data
+    if (IsWithinMainExec(retIp)) {
+        threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, threadid));
+        threadData->sizeByPointer->insert({(ADDRINT)ptr, size});
+
+        TraceFile << "Saved: <0x" << (ADDRINT)ptr << "," << size << "> on malloc map" << std::endl;
+    }
+
+    return ptr;
+}
+
+VOID* MallocWrapper2(CONTEXT* ctxt, AFUNPTR origMalloc, size_t size) {
+    TraceFile << "MyMalloc: Allocating " << size << " bytes" << std::endl;
+// Call the original malloc function
+    VOID* result;
+    PIN_CallApplicationFunction(ctxt, PIN_ThreadId(), CALLINGSTD_DEFAULT, origMalloc, NULL,
+                               PIN_PARG(VOID*), &result,
+                               PIN_PARG(size_t), size,
+                               PIN_PARG_END());
+
+    // Optional: Additional logic after malloc
+    TraceFile << "MyMalloc: Returned pointer " << result << std::endl;
+    return result;
+}
+
+
 /* ================================================================================= */
 /* This is called every time a MODULE (dll, etc.) is LOADED                          */
 /* ================================================================================= */
@@ -1339,13 +1426,45 @@ void ImageLoad_cb(IMG Img, void *v)
     ADDRINT highAddress = IMG_HighAddress(Img);
     // UINT32 numRegions = IMG_NumRegions(Img);
 
-    // for (SEC sec = IMG_SecHead(Img); SEC_Valid(sec); sec = SEC_Next(sec)) {
-    //     for (RTN rtn = SEC_RtnHead(sec); RTN_Valid(rtn); rtn = RTN_Next(rtn)) {
-    //         std::cout << "Found function: " << RTN_Name(rtn) << " in " << IMG_Name(Img) << std::endl;
-    //     }
-    // }
+    /*
+    for (SEC sec = IMG_SecHead(Img); SEC_Valid(sec); sec = SEC_Next(sec)) {
+        for (RTN rtn = SEC_RtnHead(sec); RTN_Valid(rtn); rtn = RTN_Next(rtn)) {
+            if (RTN_Name(rtn).find("malloc") != std::string::npos) {
+                TraceFile << "In image " << imageName << " Found malloc-like: " << RTN_Name(rtn) << std::endl;
+            }
+             // Store image name so the C-string stays valid
+            //g_ImageNames.emplace_back(IMG_Name(Img));
+            //const char *imgNameCStr = g_ImageNames.back().c_str();
 
-    RTN functionRtn = RTN_FindByName(Img, function_name.c_str());
+            const char *imgNameCStr = IMG_Name(Img).c_str();
+
+            RTN_Open(rtn);
+
+            // BEFORE malloc
+            RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)MallocBeforeLog,
+                           IARG_THREAD_ID,
+                           IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // malloc(size)
+                           IARG_RETURN_IP,
+                           IARG_PTR, imgNameCStr,
+                           IARG_END);
+
+            // AFTER malloc
+            RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)MallocAfterLog,
+                           IARG_THREAD_ID,
+                           IARG_FUNCRET_EXITPOINT_VALUE, // return pointer
+                           IARG_RETURN_IP,
+                           IARG_PTR, imgNameCStr,
+                           IARG_END);
+
+            RTN_Close(rtn);
+            //std::cout << "Found function: " << RTN_Name(rtn) << " in " << IMG_Name(Img) << std::endl;
+        }
+    }
+*/
+
+
+    RTN functionRtn = RTN_FindByName(Img, "main");
+    //RTN functionRtn = RTN_FindByName(Img, function_name.c_str());
     if (RTN_Valid(functionRtn)) {
         RTN_Open(functionRtn);
 
@@ -1358,6 +1477,11 @@ void ImageLoad_cb(IMG Img, void *v)
                        IARG_THREAD_ID, IARG_CONTEXT, IARG_END);
 
         RTN_Close(functionRtn);
+    } else {
+        if (IMG_IsMainExecutable(Img) && KnobVariableName.Value() != "") {
+            std::cerr << "Couldn't instrument " << function_name << " function for tracing the variable. Fatal" << std::endl;
+            PIN_ExitProcess(1);
+        }
     }
 
     bool filtered = false;
@@ -1366,6 +1490,29 @@ void ImageLoad_cb(IMG Img, void *v)
     RTN mallocRtn = RTN_FindByName(Img, MALLOC);
     if (RTN_Valid(mallocRtn))
     {
+        // Define prototype for malloc (void* malloc(size_t))
+        proto_malloc = PROTO_Allocate(PIN_PARG(VOID*), CALLINGSTD_DEFAULT,
+                                           MALLOC,
+                                           PIN_PARG(size_t), PIN_PARG_END());
+
+        // Replace malloc with wrapper
+        AFUNPTR origMalloc = RTN_ReplaceSignature(mallocRtn, AFUNPTR(MallocWrapper),
+                             IARG_PROTOTYPE, proto_malloc,
+                             IARG_THREAD_ID,
+                             IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // size argument
+                             IARG_ORIG_FUNCPTR,                 // Original function pointer
+                             IARG_PTR, IMG_Name(Img).c_str(),  // Image name
+                             IARG_RETURN_IP,                   // Return address
+                             IARG_CONST_CONTEXT,                     // Pass context for PIN_CallApplicationFunction
+                             IARG_END);
+        
+        if (origMalloc == NULL) {
+            TraceFile << "Failed to replace malloc" << std::endl;
+        }
+
+        //RTN_Close(mallocRtn);
+
+        /*
         RTN_Open(mallocRtn);
 
         // Instrument malloc() to save the pointer and bytes asked by the thread
@@ -1379,6 +1526,7 @@ void ImageLoad_cb(IMG Img, void *v)
         //                IARG_FUNCRET_EXITPOINT_VALUE, IARG_END);
 
         RTN_Close(mallocRtn);
+        */
     }
 
     // Find the free() function.
@@ -1418,6 +1566,12 @@ void ImageLoad_cb(IMG Img, void *v)
 
         main_begin = lowAddress;
         main_end = highAddress;
+
+        if (KnobDebugLogs.Value()) {
+            if (ShouldWriteToFile()) {
+                TraceFile << "< main_begin, main_end >: " << main_begin << ", " << main_end << std::endl;
+            }
+        }
     }
     else
     {
@@ -1638,22 +1792,7 @@ void ThreadFinish_cb(THREADID threadIndex, const CONTEXT *ctxt, INT32 code, VOID
 /* Fini                                                                  */
 /* ===================================================================== */
 
-VOID Fini(INT32 code, VOID *v)
-{
-    // End timing for main function
-    /*
-    if (g_timer)
-        g_timer->endTimer("main");
-
-    // Print timing summary and cleanup
-    if (g_timer)
-    {
-        g_timer->printSummary();
-        delete g_timer;
-        g_timer = nullptr;
-    }
-    */
-
+VOID Fini(INT32 code, VOID *v) {
     if (enableFileOutput) {
         // Wait for any pending write threads to complete
         PIN_GetLock(&fileWriteLock, 0);
@@ -1682,6 +1821,8 @@ VOID Fini(INT32 code, VOID *v)
         TraceFile.flush();
         // TraceFile.close();
     }
+
+    PROTO_Free(proto_malloc);
 }
 
 // Function to execute the command and read the output
@@ -1868,6 +2009,13 @@ int main(int argc, char *argv[])
         {
             std::cerr << "Error getting var offset" << std::endl;
             return 1; // Exit with an error code
+        }
+
+        if (KnobDebugLogs.Value()) {
+            if (ShouldWriteToFile()) {
+                TraceFile << "Func offset: 0x" << std::hex << std::uppercase << func_offset << std::endl;
+                TraceFile << "Var offset: 0x" << var_offset << " Var offset - ADDRINT(16): 0x" << var_offset - ADDRINT(16) << std::dec << std::endl;
+            }
         }
     }
 
