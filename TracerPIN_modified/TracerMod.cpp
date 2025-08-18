@@ -873,7 +873,7 @@ static VOID RecordMem(THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size
             std::map<ADDRINT, ADDRINT> *sizeByPointer = threadData->sizeByPointer;
             if (IsWithinDwarfFunction(ip))
             {
-                ADDRINT sixteenBytes = ADDRINT(16);
+                ADDRINT sixteenBytes = ADDRINT(80);
                 ADDRINT trueOffset = var_offset + sixteenBytes;
                 ADDRINT varInStack = threadData->rbpCache - trueOffset;
 
@@ -1463,8 +1463,8 @@ void ImageLoad_cb(IMG Img, void *v)
 */
 
 
-    RTN functionRtn = RTN_FindByName(Img, "main");
-    //RTN functionRtn = RTN_FindByName(Img, function_name.c_str());
+    //RTN functionRtn = RTN_FindByName(Img, "main");
+    RTN functionRtn = RTN_FindByName(Img, function_name.c_str());
     if (RTN_Valid(functionRtn)) {
         RTN_Open(functionRtn);
 
