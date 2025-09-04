@@ -93,6 +93,7 @@ int myFunction2(int a) {
 }
 
 int main() {
+  /*
   int totalSize = 5;                                 // Number of elements
   int *arr = (int *)malloc(totalSize * sizeof(int)); // Allocate memory for n integers
 
@@ -184,6 +185,7 @@ int main() {
   // }
 
   free(matrix);
+  */
 
 /*
   int rows2 = 1, cols2 = 2, depth = 5;
