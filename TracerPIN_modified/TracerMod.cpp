@@ -333,6 +333,7 @@ PROTO proto_malloc;
 ADDRINT func_offset = 0;
 ADDRINT func_totalbytes = 0;
 
+bool isGnuCompiled = false;
 INT64 var_offset = 0;
 UINT64 var_byte_size = 0;
 bool filter_by_dwarf = false;
@@ -828,6 +829,17 @@ void AddToTraceBuffer(THREADID threadOwner, THREADID threadWriter, ADDRINT addre
     }
 }
 
+ADDRINT calculateVarOffset(ADDRINT rbpValue) {
+    ADDRINT offsetFromCFA = 0;
+    if (isGnuCompiled) {
+        offsetFromCFA = ADDRINT(16);
+    }
+
+    ADDRINT trueOffset = var_offset - offsetFromCFA;
+
+    return rbpValue - trueOffset;
+}
+
 static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size, BOOL isPrefetch)
 //static VOID RecordMem(THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size, BOOL isPrefetch)
 {
@@ -843,24 +855,6 @@ static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
         }
 
 
-        /*
-
-        // Excluyo si no esta en [rbp] - offsetVar
-        // Access the RBP value from the context
-        ADDRINT rbpValue = 0;
-#if defined(TARGET_IA32E)
-        rbpValue = PIN_GetContextReg(regContext, REG_RBP);
-// ADDRINT rbpValue = *reinterpret_cast<ADDRINT*>(rbp_val)
-#endif
-
-        ADDRINT sixteenBytes = ADDRINT(16);
-        // Assume that no var size means that we want a dynamically allocated variable
-
-        // Get pointer to variable in stack
-        ADDRINT trueOffset = var_offset - sixteenBytes;
-        ADDRINT varInStack = rbpValue - trueOffset;
-        */
-
         // Used for the dynamic case and static case
         threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, tid));
         ADDRINT rbpValue = 0;
@@ -875,10 +869,12 @@ static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
             std::map<ADDRINT, ADDRINT> *sizeByPointer = threadData->sizeByPointer;
             if (IsWithinDwarfFunction(ip))
             {
-                //ADDRINT sixteenBytes = ADDRINT(80);
+                /*
                 ADDRINT sixteenBytes = ADDRINT(16);
                 ADDRINT trueOffset = var_offset - sixteenBytes;
                 ADDRINT varInStack = rbpValue - trueOffset;
+                */
+                ADDRINT varInStack = calculateVarOffset(rbpValue);
 
 
                 if (KnobDebugLogs.Value()) {
@@ -886,7 +882,7 @@ static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
                         TraceFile << std::hex;
 
                         TraceFile << "W on 0x" << addr << " R: 0x" << rbpValue 
-                        << " R - Of 0x" << rbpValue - trueOffset << std::endl;
+                        << " R - Of 0x" << varInStack << std::endl;
 
                         TraceFile << std::dec;
                     }
@@ -1002,9 +998,13 @@ static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
             PIN_ReleaseLock(&_lockvarreg);
 
             if (!found) {
+                /*
                 ADDRINT sixteenBytes = ADDRINT(16);
                 ADDRINT trueOffset = var_offset - sixteenBytes;
                 ADDRINT varInStack = rbpValue - trueOffset;
+                */
+
+                ADDRINT varInStack = calculateVarOffset(rbpValue);
 
                 if (!(IsWithinDwarfFunction(ip) && addr == varInStack))
                 {
@@ -1038,10 +1038,13 @@ static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
                 }
             }
 
+            /*
             ADDRINT sixteenBytes = ADDRINT(16);
             ADDRINT trueOffset = var_offset - sixteenBytes;
             ADDRINT varLowADDR = rbpValue - trueOffset;
-            ADDRINT varHighADDR = rbpValue - trueOffset + var_byte_size;
+            */
+            ADDRINT varLowADDR = calculateVarOffset(rbpValue);
+            ADDRINT varHighADDR = varLowADDR + var_byte_size;
 
             if (varLowADDR > addr || varHighADDR <= addr)
             {
@@ -1832,6 +1835,10 @@ std::string sanitizeIdentifier(const std::string& input) {
     return result;
 }
 
+bool isGnuCompiler(const std::string& producer) {
+    return producer.find("GNU C") != std::string::npos;
+}
+
 std::string dwgrepGetLowPCHighPCAndOffsetCommand(const std::string& executable,
                                   const std::string& function_name,
                                   const std::string& variable_name) {
@@ -1847,6 +1854,15 @@ std::string dwgrepGetLowPCHighPCAndOffsetCommand(const std::string& executable,
                          sanitized_v + "\"); \n" +
                          "let Loc := V @DW_AT_location ?(elem label == DW_OP_fbreg) elem value;\n\n" +
                          "F @DW_AT_low_pc F @DW_AT_high_pc \"%d,%d,%( Loc %)\" \n)'";
+    return command;
+}
+
+std::string dwgrepGetProducer(const std::string& executable) {
+
+
+    std::string command = "dwgrep " + executable + " -e '(\n|D|\n" +
+                         "let F := D entry ?DW_TAG_compile_unit; \n" +
+                         "F @DW_AT_producer \"%s\" \n)'";
     return command;
 }
 
@@ -1977,6 +1993,11 @@ int main(int argc, char *argv[])
                 TraceFile << "Var offset: 0x" << var_offset << " Var offset - ADDRINT(16): 0x" << var_offset - ADDRINT(16) << std::dec << std::endl;
             }
         }
+
+        // Important to calculate CFA, for clang++ CFA = RBP, for g++ CFA = RBP + 16
+        command = dwgrepGetProducer(std::string(argv[argc - 1]));
+        std::string producer = executeCommand(command);
+        isGnuCompiled = isGnuCompiler(producer);
     }
 
     char *endptr;
