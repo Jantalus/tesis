@@ -116,14 +116,12 @@ class threadData_t
 {
 public:
     ADDRINT sizeAsked;
-    ADDRINT rbpCache;
     // UINT8 _pad[PADSIZE];
     std::map<ADDRINT, ADDRINT> *sizeByPointer;
 
     threadData_t()
     {
         sizeByPointer = new std::map<ADDRINT, ADDRINT>;
-        rbpCache = 0;
     }
 
     ~threadData_t()
@@ -335,6 +333,7 @@ PROTO proto_malloc;
 ADDRINT func_offset = 0;
 ADDRINT func_totalbytes = 0;
 
+bool isGnuCompiled = false;
 INT64 var_offset = 0;
 UINT64 var_byte_size = 0;
 bool filter_by_dwarf = false;
@@ -830,8 +829,19 @@ void AddToTraceBuffer(THREADID threadOwner, THREADID threadWriter, ADDRINT addre
     }
 }
 
-//static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size, BOOL isPrefetch)
-static VOID RecordMem(THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size, BOOL isPrefetch)
+ADDRINT calculateVarOffset(ADDRINT rbpValue) {
+    ADDRINT offsetFromCFA = 0;
+    if (isGnuCompiled) {
+        offsetFromCFA = ADDRINT(16);
+    }
+
+    ADDRINT trueOffset = var_offset - offsetFromCFA;
+
+    return rbpValue - trueOffset;
+}
+
+static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size, BOOL isPrefetch)
+//static VOID RecordMem(THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size, BOOL isPrefetch)
 {
     THREADID threadOwnerOfX = 0;
     bool found = false;
@@ -845,26 +855,12 @@ static VOID RecordMem(THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size
         }
 
 
-        /*
-
-        // Excluyo si no esta en [rbp] - offsetVar
-        // Access the RBP value from the context
-        ADDRINT rbpValue = 0;
-#if defined(TARGET_IA32E)
-        rbpValue = PIN_GetContextReg(regContext, REG_RBP);
-// ADDRINT rbpValue = *reinterpret_cast<ADDRINT*>(rbp_val)
-#endif
-
-        ADDRINT sixteenBytes = ADDRINT(16);
-        // Assume that no var size means that we want a dynamically allocated variable
-
-        // Get pointer to variable in stack
-        ADDRINT trueOffset = var_offset - sixteenBytes;
-        ADDRINT varInStack = rbpValue - trueOffset;
-        */
-
         // Used for the dynamic case and static case
         threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, tid));
+        ADDRINT rbpValue = 0;
+    #if defined(TARGET_IA32E)
+        rbpValue = PIN_GetContextReg(regContext, REG_RBP);
+    #endif
 
         
         if (var_byte_size == 0)
@@ -873,15 +869,21 @@ static VOID RecordMem(THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size
             std::map<ADDRINT, ADDRINT> *sizeByPointer = threadData->sizeByPointer;
             if (IsWithinDwarfFunction(ip))
             {
-                ADDRINT sixteenBytes = ADDRINT(80);
-                ADDRINT trueOffset = var_offset + sixteenBytes;
-                ADDRINT varInStack = threadData->rbpCache - trueOffset;
+                /*
+                ADDRINT sixteenBytes = ADDRINT(16);
+                ADDRINT trueOffset = var_offset - sixteenBytes;
+                ADDRINT varInStack = rbpValue - trueOffset;
+                */
+                ADDRINT varInStack = calculateVarOffset(rbpValue);
 
 
                 if (KnobDebugLogs.Value()) {
                     if (ShouldWriteToFile()) {
                         TraceFile << std::hex;
-                        TraceFile << "Writing on 0x" << addr << " - "" and varInStack is 0x" << varInStack << std::endl;
+
+                        TraceFile << "W on 0x" << addr << " R: 0x" << rbpValue 
+                        << " R - Of 0x" << varInStack << std::endl;
+
                         TraceFile << std::dec;
                     }
                 }
@@ -996,9 +998,13 @@ static VOID RecordMem(THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size
             PIN_ReleaseLock(&_lockvarreg);
 
             if (!found) {
+                /*
                 ADDRINT sixteenBytes = ADDRINT(16);
                 ADDRINT trueOffset = var_offset - sixteenBytes;
-                ADDRINT varInStack = threadData->rbpCache - trueOffset;
+                ADDRINT varInStack = rbpValue - trueOffset;
+                */
+
+                ADDRINT varInStack = calculateVarOffset(rbpValue);
 
                 if (!(IsWithinDwarfFunction(ip) && addr == varInStack))
                 {
@@ -1032,10 +1038,13 @@ static VOID RecordMem(THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size
                 }
             }
 
+            /*
             ADDRINT sixteenBytes = ADDRINT(16);
             ADDRINT trueOffset = var_offset - sixteenBytes;
-            ADDRINT varLowADDR = threadData->rbpCache - trueOffset;
-            ADDRINT varHighADDR = threadData->rbpCache - trueOffset + var_byte_size;
+            ADDRINT varLowADDR = rbpValue - trueOffset;
+            */
+            ADDRINT varLowADDR = calculateVarOffset(rbpValue);
+            ADDRINT varHighADDR = varLowADDR + var_byte_size;
 
             if (varLowADDR > addr || varHighADDR <= addr)
             {
@@ -1048,7 +1057,7 @@ static VOID RecordMem(THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size
                     OS_THREAD_ID tid = PIN_GetTid();
                     TraceFile
                         << "[DEBUG] TID:" << tid << " - "
-                        << "RBP VALUE: " << threadData->rbpCache << std::endl;
+                        << "RBP VALUE: " << rbpValue << std::endl;
 
                     TraceFile << "[DEBUG] memory instruction over var of interest ";
                     TraceFile << "with varLowADDR " << varLowADDR << "and varHighADDR " << varHighADDR << std::endl;
@@ -1100,18 +1109,21 @@ static VOID RecordMem(THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size
 static ADDRINT WriteAddr;
 static INT32 WriteSize;
 //static CONTEXT *RegContext;
+static CONTEXT *RegContext;
 
-static VOID RecordWriteAddrSize(ADDRINT addr, INT32 size)//, CONTEXT *regContext)
+//static VOID RecordWriteAddrSize(ADDRINT addr, INT32 size)
+static VOID RecordWriteAddrSize(ADDRINT addr, INT32 size, CONTEXT *regContext)
 {
     WriteAddr = addr;
     WriteSize = size;
-    //RegContext = regContext;
+    RegContext = regContext;
 }
 
+//static VOID RecordMemWrite(THREADID tid, ADDRINT ip)
 static VOID RecordMemWrite(THREADID tid, ADDRINT ip)
 {
-    //RecordMem(RegContext, tid, ip, 'W', WriteAddr, WriteSize, false);
-    RecordMem(tid, ip, 'W', WriteAddr, WriteSize, false);
+    RecordMem(RegContext, tid, ip, 'W', WriteAddr, WriteSize, false);
+    //RecordMem(tid, ip, 'W', WriteAddr, WriteSize, false);
 }
 
 /* ================================================================================= */
@@ -1135,7 +1147,7 @@ VOID Instruction_cb(INS ins, VOID *v)
         {
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordMem,
-                //IARG_CONTEXT,
+                IARG_CONTEXT,
                 IARG_THREAD_ID,
                 IARG_INST_PTR,
                 IARG_UINT32, 'R',
@@ -1149,7 +1161,7 @@ VOID Instruction_cb(INS ins, VOID *v)
         {
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordMem,
-                //IARG_CONTEXT,
+                IARG_CONTEXT,
                 IARG_THREAD_ID,
                 IARG_INST_PTR,
                 IARG_UINT32, 'R',
@@ -1167,7 +1179,7 @@ VOID Instruction_cb(INS ins, VOID *v)
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordWriteAddrSize,
                 IARG_MEMORYWRITE_EA,
                 IARG_MEMORYWRITE_SIZE,
-                //IARG_CONTEXT,
+                IARG_CONTEXT,
                 IARG_END);
 
             if (INS_HasFallThrough(ins))
@@ -1338,39 +1350,6 @@ void MallocAfter(THREADID tid, ADDRINT memPointer, ADDRINT returnPointer)
     }
 }
 
-/* ===================================================================== */
-/* RBP Cache Callback Functions                                          */
-/* ===================================================================== */
-
-void SaveRBPAtEntry(THREADID tid, CONTEXT *ctxt)
-{
-    threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, tid));
-    if (threadData) {
-#if defined(TARGET_IA32E)
-        ADDRINT cleanRbp = PIN_GetContextReg(ctxt, REG_RBP);
-        // threadData->rbpCache = cleanRbp - ADDRINT(32); // Previous to libc update, needed 32
-        threadData->rbpCache = cleanRbp - ADDRINT(64); // now with the libc update, need 64
-
-        if (KnobDebugLogs.Value()) {
-            if (ShouldWriteToFile()) {
-                TraceFile << "Clean rbp:" << cleanRbp << std::endl;
-                TraceFile << "rbp - ADDRINT(32):" << cleanRbp - ADDRINT(32) << std::endl;
-                TraceFile << "rbp - ADDRINT(64):" << cleanRbp - ADDRINT(64) << std::endl;
-            }
-        }
-#endif
-    }
-}
-
-void SaveRBPAtExit(THREADID tid, CONTEXT *ctxt)
-{
-    threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, tid));
-    if (threadData) {
-        threadData->rbpCache = 0;
-    }
-}
-
-
 // Wrapper for malloc
 VOID* MallocWrapper(THREADID threadid, size_t size, AFUNPTR originalMalloc, const char* imgName, ADDRINT retIp, CONTEXT* ctxt) {
     // Prepare return value and argument for malloc
@@ -1395,7 +1374,12 @@ VOID* MallocWrapper(THREADID threadid, size_t size, AFUNPTR originalMalloc, cons
         threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, threadid));
         threadData->sizeByPointer->insert({(ADDRINT)ptr, size});
 
-        TraceFile << "Saved: <0x" << (ADDRINT)ptr << "," << size << "> on malloc map" << std::endl;
+        if (KnobDebugLogs.Value()) {
+            if (ShouldWriteToFile()) {
+                TraceFile << "Saved: <0x" << (ADDRINT)ptr << "," << size << "> on malloc map" << std::endl;
+            }
+        }
+
     }
 
     return ptr;
@@ -1462,27 +1446,6 @@ void ImageLoad_cb(IMG Img, void *v)
     }
 */
 
-
-    //RTN functionRtn = RTN_FindByName(Img, "main");
-    RTN functionRtn = RTN_FindByName(Img, function_name.c_str());
-    if (RTN_Valid(functionRtn)) {
-        RTN_Open(functionRtn);
-
-        // Instrument function entry to save RBP value
-        RTN_InsertCall(functionRtn, IPOINT_BEFORE, (AFUNPTR)SaveRBPAtEntry,
-                       IARG_THREAD_ID, IARG_CONTEXT, IARG_END);
-
-        // Instrument function exit to save RBP value
-        RTN_InsertCall(functionRtn, IPOINT_AFTER, (AFUNPTR)SaveRBPAtExit,
-                       IARG_THREAD_ID, IARG_CONTEXT, IARG_END);
-
-        RTN_Close(functionRtn);
-    } else {
-        if (IMG_IsMainExecutable(Img) && KnobVariableName.Value() != "") {
-            std::cerr << "Couldn't instrument " << function_name << " function for tracing the variable. Fatal" << std::endl;
-            PIN_ExitProcess(1);
-        }
-    }
 
     bool filtered = false;
 
@@ -1872,6 +1835,10 @@ std::string sanitizeIdentifier(const std::string& input) {
     return result;
 }
 
+bool isGnuCompiler(const std::string& producer) {
+    return producer.find("GNU C") != std::string::npos;
+}
+
 std::string dwgrepGetLowPCHighPCAndOffsetCommand(const std::string& executable,
                                   const std::string& function_name,
                                   const std::string& variable_name) {
@@ -1887,6 +1854,15 @@ std::string dwgrepGetLowPCHighPCAndOffsetCommand(const std::string& executable,
                          sanitized_v + "\"); \n" +
                          "let Loc := V @DW_AT_location ?(elem label == DW_OP_fbreg) elem value;\n\n" +
                          "F @DW_AT_low_pc F @DW_AT_high_pc \"%d,%d,%( Loc %)\" \n)'";
+    return command;
+}
+
+std::string dwgrepGetProducer(const std::string& executable) {
+
+
+    std::string command = "dwgrep " + executable + " -e '(\n|D|\n" +
+                         "let F := D entry ?DW_TAG_compile_unit; \n" +
+                         "F @DW_AT_producer \"%s\" \n)'";
     return command;
 }
 
@@ -2017,6 +1993,11 @@ int main(int argc, char *argv[])
                 TraceFile << "Var offset: 0x" << var_offset << " Var offset - ADDRINT(16): 0x" << var_offset - ADDRINT(16) << std::dec << std::endl;
             }
         }
+
+        // Important to calculate CFA, for clang++ CFA = RBP, for g++ CFA = RBP + 16
+        command = dwgrepGetProducer(std::string(argv[argc - 1]));
+        std::string producer = executeCommand(command);
+        isGnuCompiled = isGnuCompiler(producer);
     }
 
     char *endptr;

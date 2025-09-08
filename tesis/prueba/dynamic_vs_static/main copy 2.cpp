@@ -154,18 +154,25 @@ int main() {
   fclose(fid);
 
   myFunction(1, 2, 3);
-*/
   int rows = 3, cols = 4;
 
   // Allocate array of row pointers
-  int **matrix = (int **)malloc(rows * sizeof(int *));
+  int** pointer = (int **)malloc(rows * sizeof(int *));
+  int **matrix = pointer;
 
   // Allocate each row
   for (int i = 0; i < rows; ++i){
     matrix[i] = (int *)malloc(cols * sizeof(int));
   }
 
-  // matrix[0][0] = 1;
+  for (int i = 0; i < rows; ++i){
+    matrix[i][0] = i;
+  }
+
+  for (int i = 0; i < rows; ++i){
+    matrix[i][2] = i;
+  }
+
   matrix[1][2] = matrix[0][2] + 1;
   // matrix[2][3] = 42;
   // matrix[0][3] = 42;
@@ -178,7 +185,9 @@ int main() {
   // }
 
   free(matrix);
+  */
 
+/*
   int rows2 = 1, cols2 = 2, depth = 5;
 
     // Allocate array of pointers to pointers (for rows)
@@ -205,8 +214,22 @@ int main() {
     }
     free(asd);
 
+    */
+   int* array = (int*) malloc(10 * sizeof(int));
+  
+   for (int i = 0; i < 10; i++){
+    array[i] = i+1;
+   }
+
+   int myVar = 0;
+   for (int i = 0; i < 10; i++){
+    myVar += array[i] + 2*i;
+   }
+
   
 
   return 0;
 }
+
+
 
