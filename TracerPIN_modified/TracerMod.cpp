@@ -840,7 +840,8 @@ ADDRINT calculateVarOffset(ADDRINT rbpValue) {
     return rbpValue - trueOffset;
 }
 
-static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size, BOOL isPrefetch)
+#if defined(TARGET_IA32E)
+static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size, BOOL isPrefetch, ADDRINT prefetchRBP)
 //static VOID RecordMem(THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size, BOOL isPrefetch)
 {
     THREADID threadOwnerOfX = 0;
@@ -856,9 +857,11 @@ static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
         // Used for the dynamic case and static case
         threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, tid));
         ADDRINT rbpValue = 0;
-    #if defined(TARGET_IA32E)
-        rbpValue = PIN_GetContextReg(regContext, REG_RBP);
-    #endif
+        if (regRBP != 0) {
+            rbpValue = regRBP;
+        } else {
+            rbpValue = prefetchRBP;
+        }
 
         
         if (var_byte_size == 0) {
@@ -1091,23 +1094,23 @@ static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
 static ADDRINT WriteAddr;
 static INT32 WriteSize;
 //static CONTEXT *RegContext;
-static CONTEXT *RegContext;
+static ADDRINT PredicatedRBPValue;
 
 //static VOID RecordWriteAddrSize(ADDRINT addr, INT32 size)
-static VOID RecordWriteAddrSize(ADDRINT addr, INT32 size, CONTEXT *regContext)
+static VOID RecordWriteAddrSize(ADDRINT addr, INT32 size, ADDRINT prefetchRBPValue)
 {
     WriteAddr = addr;
     WriteSize = size;
-    RegContext = regContext;
+    PredicatedRBPValue = prefetchRBPValue;
 }
 
 //static VOID RecordMemWrite(THREADID tid, ADDRINT ip)
 static VOID RecordMemWrite(THREADID tid, ADDRINT ip)
 {
-    RecordMem(RegContext, tid, ip, 'W', WriteAddr, WriteSize, false);
+    RecordMem(0, tid, ip, 'W', WriteAddr, WriteSize, false, PredicatedRBPValue);
     //RecordMem(tid, ip, 'W', WriteAddr, WriteSize, false);
 }
-
+#endif
 /* ================================================================================= */
 /* This is called for each instruction                                               */
 /* ================================================================================= */
@@ -1117,11 +1120,11 @@ VOID Instruction_cb(INS ins, VOID *v)
 
     // Either by -f -F filters, or by -fdid function lowpc and highpc address
     // excluding ip addresses outside of my function of interest
-    if (ExcludedAddress(ceip) && KnobExcludeAddressesOutsideMain.Value())
-    {
+    if (ExcludedAddress(ceip) && KnobExcludeAddressesOutsideMain.Value()) {
         return;
     }
 
+#if defined(TARGET_IA32E)
     if (KnobLogMem.Value())
     {
 
@@ -1129,13 +1132,14 @@ VOID Instruction_cb(INS ins, VOID *v)
         {
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordMem,
-                IARG_CONTEXT,
+                IARG_REG_VALUE, REG_RBP,
                 IARG_THREAD_ID,
                 IARG_INST_PTR,
                 IARG_UINT32, 'R',
                 IARG_MEMORYREAD_EA,
                 IARG_MEMORYREAD_SIZE,
                 IARG_BOOL, INS_IsPrefetch(ins),
+                IARG_ADDRINT, 0,
                 IARG_END);
         }
 
@@ -1143,13 +1147,14 @@ VOID Instruction_cb(INS ins, VOID *v)
         {
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordMem,
-                IARG_CONTEXT,
+                IARG_REG_VALUE, REG_RBP,
                 IARG_THREAD_ID,
                 IARG_INST_PTR,
                 IARG_UINT32, 'R',
                 IARG_MEMORYREAD2_EA,
                 IARG_MEMORYREAD_SIZE,
                 IARG_BOOL, INS_IsPrefetch(ins),
+                IARG_ADDRINT, 0,
                 IARG_END);
         }
 
@@ -1161,7 +1166,7 @@ VOID Instruction_cb(INS ins, VOID *v)
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordWriteAddrSize,
                 IARG_MEMORYWRITE_EA,
                 IARG_MEMORYWRITE_SIZE,
-                IARG_CONTEXT,
+                IARG_REG_VALUE, REG_RBP,
                 IARG_END);
 
             if (INS_HasFallThrough(ins))
@@ -1182,6 +1187,7 @@ VOID Instruction_cb(INS ins, VOID *v)
             }
         }
     }
+#endif
 
     if (KnobLogIns.Value())
     { // && !filter_by_dwarf) { TODO: por que filtraba por esto?
