@@ -182,7 +182,7 @@ struct WriteBufferArgs {
     size_t bufferSize;
 };
 
-std::string FormatTraceEntry2(const MemoryTraceEntry& entry) {
+std::string FormatTraceEntry(const MemoryTraceEntry& entry) {
     // Preallocate string with estimated capacity
     std::string result;
     result.reserve(64); // Adjust based on expected output size (e.g., operation, threads, address, memdump)
@@ -278,7 +278,7 @@ void WriteBufferToFile(void* arg)
     std::stringstream bulkData; 
     for (size_t i = 0; i < bufferSize; i++) {
         const MemoryTraceEntry& entry = bufferInfo->buffer[i];
-        bulkData << FormatTraceEntry2(entry);
+        bulkData << FormatTraceEntry(entry);
     }
     
     // Single file write operation
@@ -728,7 +728,7 @@ VOID printInst(ADDRINT ip, std::string *disass, INT32 size)
 }
 
 // Helper function to format a trace entry to string
-std::string FormatTraceEntry(const MemoryTraceEntry& entry)
+std::string FormatTraceEntryOld(const MemoryTraceEntry& entry)
 {
     std::stringstream ss;
     ss << "[" << entry.operation << "]";
@@ -840,17 +840,16 @@ ADDRINT calculateVarOffset(ADDRINT rbpValue) {
     return rbpValue - trueOffset;
 }
 
-static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size, BOOL isPrefetch)
+#if defined(TARGET_IA32E)
+static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size, BOOL isPrefetch, ADDRINT prefetchRBP)
 //static VOID RecordMem(THREADID tid, ADDRINT ip, CHAR r, ADDRINT addr, INT32 size, BOOL isPrefetch)
 {
     THREADID threadOwnerOfX = 0;
     bool found = false;
 
     // SECTION 1: DWARF Filtering
-    if (filter_by_dwarf)
-    {
-        if (func_offset == 0)
-        {
+    if (filter_by_dwarf) {
+        if (func_offset == 0) {
             std::cerr << "Offset function 0, but filter_by_dwarf true" << std::endl;
         }
 
@@ -858,17 +857,17 @@ static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
         // Used for the dynamic case and static case
         threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, tid));
         ADDRINT rbpValue = 0;
-    #if defined(TARGET_IA32E)
-        rbpValue = PIN_GetContextReg(regContext, REG_RBP);
-    #endif
+        if (regRBP != 0) {
+            rbpValue = regRBP;
+        } else {
+            rbpValue = prefetchRBP;
+        }
 
         
-        if (var_byte_size == 0)
-        {
+        if (var_byte_size == 0) {
             // DYNAMIC VARIABLE
             std::map<ADDRINT, ADDRINT> *sizeByPointer = threadData->sizeByPointer;
-            if (IsWithinDwarfFunction(ip))
-            {
+            if (IsWithinDwarfFunction(ip)) {
                 /*
                 ADDRINT sixteenBytes = ADDRINT(16);
                 ADDRINT trueOffset = var_offset - sixteenBytes;
@@ -896,8 +895,7 @@ static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
                         }
                     }
                     // Operating on x (var by DwarfID)
-                    if (r == 'R')
-                    { // If reading the pointer, not the heap allocated memory: skip
+                    if (r == 'R') { // If reading the pointer, not the heap allocated memory: skip
                         return;
                     }
 
@@ -930,8 +928,7 @@ static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
                     PIN_ReleaseLock(&_lockvarreg);
                     // Region of memory saved
 
-                    if (KnobDebugLogs.Value())
-                    {
+                    if (KnobDebugLogs.Value()) {
                         if (ShouldWriteToFile()) {
                             TraceFile << "[DEBUG] VarRegions ADD x region";
                             printVarRegions(varRegions);
@@ -1006,24 +1003,17 @@ static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
 
                 ADDRINT varInStack = calculateVarOffset(rbpValue);
 
-                if (!(IsWithinDwarfFunction(ip) && addr == varInStack))
-                {
+                if (!(IsWithinDwarfFunction(ip) && addr == varInStack)) {
                     return;
-                }
-                else
-                {
+                } else {
                     found = true; // CAMBIAR CACA, pero funciona
                 }
             }
-        }
-        else
-        {
+        } else {
             // STATIC Variables
             // We already now all writes to variable occur in the function, so return if not in f
-            if (!IsWithinDwarfFunction(ip))
-            {
-                if (KnobDebugLogs.Value())
-                {
+            if (!IsWithinDwarfFunction(ip)) {
+                if (KnobDebugLogs.Value()) {
                     if (ShouldWriteToFile()) {
                         TraceFile << "[DEBUG] Excluding address out of func 0x" << ip << std::endl;
                     }
@@ -1031,8 +1021,7 @@ static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
                 return;
             }
 
-            if (KnobDebugLogs.Value())
-            {
+            if (KnobDebugLogs.Value()) {
                 if (ShouldWriteToFile()) {
                     TraceFile << "[DEBUG] Address 0x" << ip << " in func address range" << std::endl;
                 }
@@ -1046,13 +1035,11 @@ static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
             ADDRINT varLowADDR = calculateVarOffset(rbpValue);
             ADDRINT varHighADDR = varLowADDR + var_byte_size;
 
-            if (varLowADDR > addr || varHighADDR <= addr)
-            {
+            if (varLowADDR > addr || varHighADDR <= addr) {
                 return;
             }
 
-            if (KnobDebugLogs.Value())
-            {
+            if (KnobDebugLogs.Value()) {
                 if (ShouldWriteToFile()) {
                     OS_THREAD_ID tid = PIN_GetTid();
                     TraceFile
@@ -1068,10 +1055,8 @@ static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
 
     // SECTION 3: Live Filtering
     // test on logfilterlive here to avoid calls when not using live filtering
-    else
-    {
-        if (logfilterlive && ExcludedAddressLive(ip))
-        {
+    else {
+        if (logfilterlive && ExcludedAddressLive(ip)) {
             return;
         }
     }
@@ -1109,23 +1094,23 @@ static VOID RecordMem(CONTEXT *regContext, THREADID tid, ADDRINT ip, CHAR r, ADD
 static ADDRINT WriteAddr;
 static INT32 WriteSize;
 //static CONTEXT *RegContext;
-static CONTEXT *RegContext;
+static ADDRINT PredicatedRBPValue;
 
 //static VOID RecordWriteAddrSize(ADDRINT addr, INT32 size)
-static VOID RecordWriteAddrSize(ADDRINT addr, INT32 size, CONTEXT *regContext)
+static VOID RecordWriteAddrSize(ADDRINT addr, INT32 size, ADDRINT prefetchRBPValue)
 {
     WriteAddr = addr;
     WriteSize = size;
-    RegContext = regContext;
+    PredicatedRBPValue = prefetchRBPValue;
 }
 
 //static VOID RecordMemWrite(THREADID tid, ADDRINT ip)
 static VOID RecordMemWrite(THREADID tid, ADDRINT ip)
 {
-    RecordMem(RegContext, tid, ip, 'W', WriteAddr, WriteSize, false);
+    RecordMem(0, tid, ip, 'W', WriteAddr, WriteSize, false, PredicatedRBPValue);
     //RecordMem(tid, ip, 'W', WriteAddr, WriteSize, false);
 }
-
+#endif
 /* ================================================================================= */
 /* This is called for each instruction                                               */
 /* ================================================================================= */
@@ -1135,11 +1120,11 @@ VOID Instruction_cb(INS ins, VOID *v)
 
     // Either by -f -F filters, or by -fdid function lowpc and highpc address
     // excluding ip addresses outside of my function of interest
-    if (ExcludedAddress(ceip) && KnobExcludeAddressesOutsideMain.Value())
-    {
+    if (ExcludedAddress(ceip) && KnobExcludeAddressesOutsideMain.Value()) {
         return;
     }
 
+#if defined(TARGET_IA32E)
     if (KnobLogMem.Value())
     {
 
@@ -1147,13 +1132,14 @@ VOID Instruction_cb(INS ins, VOID *v)
         {
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordMem,
-                IARG_CONTEXT,
+                IARG_REG_VALUE, REG_RBP,
                 IARG_THREAD_ID,
                 IARG_INST_PTR,
                 IARG_UINT32, 'R',
                 IARG_MEMORYREAD_EA,
                 IARG_MEMORYREAD_SIZE,
                 IARG_BOOL, INS_IsPrefetch(ins),
+                IARG_ADDRINT, 0,
                 IARG_END);
         }
 
@@ -1161,13 +1147,14 @@ VOID Instruction_cb(INS ins, VOID *v)
         {
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordMem,
-                IARG_CONTEXT,
+                IARG_REG_VALUE, REG_RBP,
                 IARG_THREAD_ID,
                 IARG_INST_PTR,
                 IARG_UINT32, 'R',
                 IARG_MEMORYREAD2_EA,
                 IARG_MEMORYREAD_SIZE,
                 IARG_BOOL, INS_IsPrefetch(ins),
+                IARG_ADDRINT, 0,
                 IARG_END);
         }
 
@@ -1179,7 +1166,7 @@ VOID Instruction_cb(INS ins, VOID *v)
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordWriteAddrSize,
                 IARG_MEMORYWRITE_EA,
                 IARG_MEMORYWRITE_SIZE,
-                IARG_CONTEXT,
+                IARG_REG_VALUE, REG_RBP,
                 IARG_END);
 
             if (INS_HasFallThrough(ins))
@@ -1200,6 +1187,7 @@ VOID Instruction_cb(INS ins, VOID *v)
             }
         }
     }
+#endif
 
     if (KnobLogIns.Value())
     { // && !filter_by_dwarf) { TODO: por que filtraba por esto?
@@ -1773,7 +1761,7 @@ VOID Fini(INT32 code, VOID *v) {
             for (size_t i = 0; i < currentBuffer->index; i++) {
                 const MemoryTraceEntry& entry = currentBuffer->buffer[i];
                 
-                bulkData << FormatTraceEntry2(entry);
+                bulkData << FormatTraceEntry(entry);
             }
             
             // Single file write operation
