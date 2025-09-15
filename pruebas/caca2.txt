@@ -1,0 +1,2 @@
+Mi dame algo = 2
+Mi timestamp = 2025-09-08 19:01:17
