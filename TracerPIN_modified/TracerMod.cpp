@@ -81,8 +81,7 @@ KNOB<std::string> KnobLogFilterLive(KNOB_MODE_WRITEONCE, "pintool",
                                     "F", "0", "(0) no live filter (0x400000:0x410000) use addresses as start:stop live filter");
 KNOB<INT> KnobLogFilterLiveN(KNOB_MODE_WRITEONCE, "pintool",
                              "n", "0", "which occurence to log, 0=all (only for -F start:stop filter)");
-// KNOB<std::string> KnobLogType(KNOB_MODE_WRITEONCE, "pintool",
-                              // "t", "human", "log type: human/sqlite");
+
 KNOB<BOOL> KnobQuiet(KNOB_MODE_WRITEONCE, "pintool",
                      "q", "0", "be quiet under normal conditions");
 KNOB<std::string> KnobVariableDwarfDIE_ID(KNOB_MODE_WRITEONCE, "pintool",
