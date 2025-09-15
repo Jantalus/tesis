@@ -84,26 +84,22 @@ KNOB<INT> KnobLogFilterLiveN(KNOB_MODE_WRITEONCE, "pintool",
 
 KNOB<BOOL> KnobQuiet(KNOB_MODE_WRITEONCE, "pintool",
                      "q", "0", "be quiet under normal conditions");
-KNOB<std::string> KnobVariableDwarfDIE_ID(KNOB_MODE_WRITEONCE, "pintool",
-                                          "vdid", "0", "Variable DWARF DIE ID, obtained from de debug_info section. Recommended to use readelf -wi <executable> \n Default (0) means no use of this filter. Use with <PONER ACA SIZE IN BYTES Y FUNC OPT>");
 KNOB<std::string> KnobVariableName(KNOB_MODE_WRITEONCE, "pintool",
-                                   "vname", "", "Variable name, will be used to lookup in the dwarf debug data. \n Default (0) means no use of this filter. Use with <PONER ACA SIZE IN BYTES Y FUNC OPT>");
+                                   "vname", "", "Variable name, will be used to search the children nodes of the function in the debug data. \n Default ('') means no use of this filter. Use with -fname");
 KNOB<UINT64> KnobVarByteSize(KNOB_MODE_WRITEONCE, "pintool",
-                             "vs", "0", "Variable to trace size in Bytes. Used with -vdid option");
-KNOB<std::string> KnobFunctionDwarfDIE_ID(KNOB_MODE_WRITEONCE, "pintool",
-                                          "fdid", "0", "Function DWARF DIE ID, obtained from de debug_info section. Recommended to use readelf -wi <executable> \n Default (0) means no use of this filter. Use with <PONER ACA SIZE IN BYTES Y FUNC OPT>");
+                             "vs", "0", "Variable to trace size in Bytes. Use with -fname -vname, the pressence of a value here assumes an static variable");
 KNOB<std::string> KnobFunctionName(KNOB_MODE_WRITEONCE, "pintool",
-                                   "fname", "", "Function  name, will be used to lookup in the dwarf debug data. \n Default (0) means no use of this filter. Use with <PONER ACA SIZE IN BYTES Y FUNC OPT>");
+                                   "fname", "", "Function  name, will be used to search in the debug data.\n Default ('') means no use of this filter. Use with -vname");
 KNOB<BOOL> KnobDiscriminateThread(KNOB_MODE_WRITEONCE, "pintool",
-                                  "td", "0", "Discriminate which thread read/writes the variable and who owns it");
+                                  "td", "0", "Discriminate which thread read/writes the variable and who owns it.\n[Owner][Accessing]");
 KNOB<BOOL> KnobExcludeAddressesOutsideMain(KNOB_MODE_WRITEONCE, "pintool",
-                                           "excl", "1", "Exclude instructions to instrment outside main executable, ex: libc");
+                                           "excl", "1", "Exclude instructions to instrment outside main executable, ex: libc.\nThis can lead to lose of traces if the variable pointer is written outside the main image.");
 KNOB<BOOL> KnobDebugLogs(KNOB_MODE_WRITEONCE, "pintool",
-                         "d", "0", "Add debug logs for reading RBP, and knowing when addresses are filtered because of func, or because of not var of interest");
+                         "d", "0", "Debug logs, not very useful unless you add your own.");
 KNOB<BOOL> KnobEnableFileOutput(KNOB_MODE_WRITEONCE, "pintool",
                                 "file", "1", "enable/disable file output (1=enable, 0=disable)");
 KNOB<BOOL> KnobEnableRecursiveAllocTracking(KNOB_MODE_WRITEONCE, "pintool",
-                                "recursive", "1", "enable/disable recursive tracking of malloced pointers (1=enable, 0=disable)");
+                                "recursive", "1", "enable/disable recursive tracking of malloced pointers (1=enable, 0=disable).\nThis means that when writing a malloced pointer to an already traced section of memory, it will be added to the regions of interest.");
 
 
 // Force each thread's data to be in its own data cache line so that
@@ -315,8 +311,6 @@ struct moduledata_t
 
 typedef std::map<std::string, moduledata_t> modmap_t;
 
-std::string variable_dwarf_id;
-std::string function_dwarf_id;
 std::string variable_name;
 std::string function_name;
 UINT64 variable_size;
@@ -562,6 +556,7 @@ INT32 Usage()
 {
     std::cerr << "Tracer with memory R/W and disass" << std::endl;
     std::cerr << "Result by default in trace-full-info.txt" << std::endl
+    std::cerr << "Only tested in x86, x86_64" << std::endl
               << std::endl;
 
     std::cerr << KNOB_BASE::StringKnobSummary();
@@ -572,7 +567,7 @@ INT32 Usage()
 }
 
 /* ===================================================================== */
-/* Mati Helper funcs                                                      */
+/* TracerMod Helper funcs                                                      */
 /* ===================================================================== */
 
 bool IsWithinMainExec(ADDRINT addr)
@@ -831,7 +826,11 @@ void AddToTraceBuffer(THREADID threadOwner, THREADID threadWriter, ADDRINT addre
 ADDRINT calculateVarOffset(ADDRINT rbpValue) {
     ADDRINT offsetFromCFA = 0;
     if (isGnuCompiled) {
-        offsetFromCFA = ADDRINT(16);
+        #if defined(TARGET_IA32E)
+        offsetFromCFA = ADDRINT(16); // Usual offset for x86_64 is 16B
+        #elif defined(TARGET_IA32)
+        offsetFromCFA = ADDRINT(8); // Usual offset for x86_64 is 16B
+        #endif
     }
 
     ADDRINT trueOffset = var_offset - offsetFromCFA;
@@ -1904,14 +1903,10 @@ int main(int argc, char *argv[])
         }
     }
 
-    variable_dwarf_id = KnobVariableDwarfDIE_ID.Value();
-    function_dwarf_id = KnobFunctionDwarfDIE_ID.Value();
     variable_name = KnobVariableName.Value();
     function_name = KnobFunctionName.Value();
 
-    // filter_by_dwarf = (function_dwarf_id > "0" && variable_dwarf_id > "0") || (function_name != "" && variable_name != "");
-    //  TODO: make it so that you can either pass the string or the dwarf ids
-    filter_by_dwarf = (function_dwarf_id > "0" && variable_dwarf_id > "0") || (function_name != "" && variable_name != "");
+    filter_by_dwarf = (function_name != "" && variable_name != "");
     if (filter_by_dwarf)
     {
 #if !defined(TARGET_IA32E)
@@ -1923,10 +1918,6 @@ int main(int argc, char *argv[])
         if (KnobDebugLogs.Value())
         {
             if (ShouldWriteToFile()) {
-                TraceFile << "Using DWARF Function DIE ID: " << function_dwarf_id << std::endl;
-                TraceFile << "Using DWARF Variable DIE ID: " << variable_dwarf_id;
-                TraceFile << " with size " << std::dec << var_byte_size << std::endl;
-
                 TraceFile << "Using Function name: " << function_name << std::endl;
                 TraceFile << "Using Variable name: " << variable_name;
                 TraceFile << " with size " << std::dec << var_byte_size << std::endl;
