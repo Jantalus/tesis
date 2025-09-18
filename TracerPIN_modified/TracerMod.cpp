@@ -81,7 +81,6 @@ KNOB<std::string> KnobLogFilterLive(KNOB_MODE_WRITEONCE, "pintool",
                                     "F", "0", "(0) no live filter (0x400000:0x410000) use addresses as start:stop live filter");
 KNOB<INT> KnobLogFilterLiveN(KNOB_MODE_WRITEONCE, "pintool",
                              "n", "0", "which occurence to log, 0=all (only for -F start:stop filter)");
-
 KNOB<BOOL> KnobQuiet(KNOB_MODE_WRITEONCE, "pintool",
                      "q", "0", "be quiet under normal conditions");
 KNOB<std::string> KnobVariableName(KNOB_MODE_WRITEONCE, "pintool",
@@ -555,7 +554,7 @@ extern "C" int utimes(const char *path, const struct timeval times[2])
 INT32 Usage()
 {
     std::cerr << "Tracer with memory R/W and disass" << std::endl;
-    std::cerr << "Result by default in trace-full-info.txt" << std::endl
+    std::cerr << "Result by default in trace-full-info.txt" << std::endl;
     std::cerr << "Only tested in x86, x86_64" << std::endl
               << std::endl;
 
@@ -904,10 +903,8 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
                     auto it = sizeByPointer->find(heapAllocatedPointer);
 
                     // Validate if pointer is from malloc
-                    if (it == sizeByPointer->end())
-                    {
-                        if (KnobDebugLogs.Value())
-                        {
+                    if (it == sizeByPointer->end()) {
+                        if (KnobDebugLogs.Value()) {
                             if (ShouldWriteToFile()) {
                                 TraceFile << "[DEBUG] Pointer 0x" << heapAllocatedPointer << " not in map " << std::endl;
                             }
@@ -927,10 +924,7 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
                     // Region of memory saved
 
                     if (KnobDebugLogs.Value()) {
-                        if (ShouldWriteToFile()) {
-                            TraceFile << "[DEBUG] VarRegions ADD x region";
-                            printVarRegions(varRegions);
-                        }
+                        if (ShouldWriteToFile()) TraceFile << "[DEBUG] VarRegions ADD x region";
                     }
 
                     // Proceed to trace the pointer (to the heap) written

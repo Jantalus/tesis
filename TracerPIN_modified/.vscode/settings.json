@@ -105,7 +105,8 @@
         "forward_list": "cpp",
         "ranges": "cpp",
         "byte": "cpp",
-        "util": "cpp"
+        "util": "cpp",
+        "cfenv": "cpp"
     },
     "C_Cpp.errorSquiggles": "disabled"
 }
