@@ -135,6 +135,12 @@ std::ofstream TraceFile;
 
 // Global flag to control file output
 bool enableFileOutput = true;
+
+// Helper function to check if we should write to file
+inline bool ShouldWriteToFile() {
+    return enableFileOutput;
+}
+
 // Memory trace buffer structure and global buffer
 struct MemoryTraceEntry
 {
@@ -169,6 +175,27 @@ BufferInfo* writeBuffer = nullptr;
 
 // Lock for file writing operations
 PIN_LOCK fileWriteLock;
+
+
+// Debug logging helper function
+void DebugLog(const std::string& message) {
+    if (KnobDebugLogs.Value() && ShouldWriteToFile()) {
+        TraceFile << "[DEBUG] " << message << std::endl;
+    }
+}
+
+// Debug logging helper function with formatting support
+template<typename... Args>
+void DebugLog(const std::string& format, Args... args) {
+    if (KnobDebugLogs.Value() && ShouldWriteToFile()) {
+        TraceFile << "[DEBUG] ";
+        // Simple formatting - you could use a more sophisticated approach
+        TraceFile << format;
+        ((TraceFile << args), ...);
+        TraceFile << std::endl;
+    }
+}
+
 
 // Structure to pass buffer information to write thread
 struct WriteBufferArgs {
@@ -290,10 +317,6 @@ void WriteBufferToFile(void* arg)
     delete args;
 }
 
-// Helper function to check if we should write to file
-inline bool ShouldWriteToFile() {
-    return enableFileOutput;
-}
 
 
 /*
@@ -344,7 +367,7 @@ std::vector<VariableMemoryLocation> varRegions;
 
 void printVarRegions(std::vector<VariableMemoryLocation> regions)
 {
-    if (!ShouldWriteToFile()) return;
+    if (!ShouldWriteToFile() || !KnobDebugLogs.Value()) return;
     
     TraceFile << regions.size() << " elements" << "[";
     for (const auto &varRegion : regions)
@@ -571,10 +594,7 @@ INT32 Usage()
 
 bool IsWithinMainExec(ADDRINT addr)
 {
-    if (KnobDebugLogs.Value())
-    {
-        TraceFile << "[DEBUG] Address within main exec 0x" << addr << std::endl;
-    }
+    DebugLog("Address within main exec 0x", addr);
 
     return (main_begin <= addr && addr <= main_end);
 }
@@ -873,24 +893,12 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
                 ADDRINT varInStack = calculateVarOffset(rbpValue);
 
 
-                if (KnobDebugLogs.Value()) {
-                    if (ShouldWriteToFile()) {
-                        TraceFile << std::hex;
-
-                        TraceFile << "W on 0x" << addr << " R: 0x" << rbpValue 
-                        << " R - Of 0x" << varInStack << std::endl;
-
-                        TraceFile << std::dec;
-                    }
-                }
+                DebugLog("W on 0x", std::hex, addr, " R: 0x", rbpValue, " R - Of 0x", varInStack, std::dec);
 
                 if (addr == varInStack) {
  
-                    if (KnobDebugLogs.Value()) {
-                        if (ShouldWriteToFile()) {
-                            TraceFile << "Writing on var in stack" << std::endl;
-                        }
-                    }
+                    DebugLog("Writing on var in stack" );
+
                     // Operating on x (var by DwarfID)
                     if (r == 'R') { // If reading the pointer, not the heap allocated memory: skip
                         return;
@@ -904,11 +912,7 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
 
                     // Validate if pointer is from malloc
                     if (it == sizeByPointer->end()) {
-                        if (KnobDebugLogs.Value()) {
-                            if (ShouldWriteToFile()) {
-                                TraceFile << "[DEBUG] Pointer 0x" << heapAllocatedPointer << " not in map " << std::endl;
-                            }
-                        }
+                        DebugLog("Pointer 0x", std::hex, heapAllocatedPointer, " not in map", std::dec);
                         // Not found -> Not tracing
                         return;
                     }
@@ -923,9 +927,8 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
                     PIN_ReleaseLock(&_lockvarreg);
                     // Region of memory saved
 
-                    if (KnobDebugLogs.Value()) {
-                        if (ShouldWriteToFile()) TraceFile << "[DEBUG] VarRegions ADD x region";
-                    }
+                    DebugLog("VarRegions ADD x region");
+                    printVarRegions(varRegions);
 
                     // Proceed to trace the pointer (to the heap) written
                 }
@@ -956,27 +959,15 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
                             if (it == sizeByPointer->end())
                             {
                                 // Not found -> not malloced memory
-                                if (KnobDebugLogs.Value())
-                                {
-                                    if (ShouldWriteToFile())
-                                    {
-                                        TraceFile << "[DEBUG] Pointer 0x" << addr << " not in map " << std::endl;
-                                    }
-                                }
+                                DebugLog("Pointer 0x", std::hex, addr, " not in map", std::dec);
                             }
                             else {
                                 // pointer is from malloc call
                                 ADDRINT varSizeInBytes = it->second;
                                 varRegions.emplace_back(writingBytes, (writingBytes + varSizeInBytes), tid);
 
-                                if (KnobDebugLogs.Value())
-                                {
-                                    if (ShouldWriteToFile())
-                                    {
-                                        TraceFile << "[DEBUG] indirect add char - VarRegions ADD x region ";
-                                        printVarRegions(varRegions);
-                                    }
-                                }
+                                DebugLog("indirect add char - VarRegions ADD x region");
+                                printVarRegions(varRegions);
                             }
                         }
                     }
@@ -1005,19 +996,11 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
             // STATIC Variables
             // We already now all writes to variable occur in the function, so return if not in f
             if (!IsWithinDwarfFunction(ip)) {
-                if (KnobDebugLogs.Value()) {
-                    if (ShouldWriteToFile()) {
-                        TraceFile << "[DEBUG] Excluding address out of func 0x" << ip << std::endl;
-                    }
-                }
+                DebugLog("Excluding address out of func 0x", std::hex, ip, std::dec);
                 return;
             }
 
-            if (KnobDebugLogs.Value()) {
-                if (ShouldWriteToFile()) {
-                    TraceFile << "[DEBUG] Address 0x" << ip << " in func address range" << std::endl;
-                }
-            }
+            DebugLog("Address 0x", std::hex, ip, " in func address range", std::dec);
 
             /*
             ADDRINT sixteenBytes = ADDRINT(16);
@@ -1031,17 +1014,8 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
                 return;
             }
 
-            if (KnobDebugLogs.Value()) {
-                if (ShouldWriteToFile()) {
-                    OS_THREAD_ID tid = PIN_GetTid();
-                    TraceFile
-                        << "[DEBUG] TID:" << tid << " - "
-                        << "RBP VALUE: " << rbpValue << std::endl;
-
-                    TraceFile << "[DEBUG] memory instruction over var of interest ";
-                    TraceFile << "with varLowADDR " << varLowADDR << "and varHighADDR " << varHighADDR << std::endl;
-                }
-            }
+            DebugLog("RBP VALUE: ", std::hex, rbpValue, std::dec);
+            DebugLog("memory instruction over var of interest with varLowADDR 0x", std::hex, varLowADDR, " and varHighADDR 0x", std::hex, varHighADDR, std::dec);
         }
     }
 
@@ -1210,56 +1184,33 @@ void FreeBefore(THREADID tid, ADDRINT pointerToFree, ADDRINT returnPointer)
     for (std::map<ADDRINT, ADDRINT>::iterator it = threadData->sizeByPointer->begin(); it != threadData->sizeByPointer->end(); it++)
     {
 
-        if (KnobDebugLogs.Value())
-        {
-            if (ShouldWriteToFile()) {
-                TraceFile << "Thread FREE" << tid << "- MapElement " << i << " of map is:" << it->second << std::endl;
-            }
-        }
+        DebugLog("Thread FREE", tid, "- MapElement", i, "of map is:", it->second);
 
         if ((it->first) == pointerToFree)
         {
             threadData->sizeByPointer->erase(it);
-            if (KnobDebugLogs.Value())
-            {
-                if (ShouldWriteToFile()) {
-                    TraceFile << "Thread " << tid << " freed " << pointerToFree << " with 0x" << it->second << " bytes" << std::endl;
-                }
-            }
+            DebugLog("Thread ", tid, " freed ", std::hex, pointerToFree, " with 0x", std::hex, it->second, " bytes", std::dec);
             break;
         }
         i++;
     }
 
-    if (KnobDebugLogs.Value())
-    {
-        if (ShouldWriteToFile()) {
-            TraceFile << "[DEBUG] VarRegions before freeing";
-            printVarRegions(varRegions);
-        }
-    }
+    DebugLog("VarRegions before freeing");
+    printVarRegions(varRegions);
+
     // Remove from global sections of memory
     PIN_GetLock(&_lockvarreg, 0);
-    for (auto it = varRegions.begin(); it != varRegions.end();)
-    {
-        if (it->startAddress == pointerToFree)
-        {
+    for (auto it = varRegions.begin(); it != varRegions.end();) {
+        if (it->startAddress == pointerToFree) {
             it = varRegions.erase(it);
-        }
-        else
-        {
+        } else {
             ++it;
         }
     }
     PIN_ReleaseLock(&_lockvarreg);
 
-    if (KnobDebugLogs.Value())
-    {
-        if (ShouldWriteToFile()) {
-            TraceFile << "[DEBUG] VarRegions after freeing";
-            printVarRegions(varRegions);
-        }
-    }
+    DebugLog("VarRegions after freeing");
+    printVarRegions(varRegions);
 }
 
 void MallocBeforeLog(THREADID tid, size_t size, ADDRINT returnIp, const char* imgName) {
@@ -1270,64 +1221,6 @@ void MallocBeforeLog(THREADID tid, size_t size, ADDRINT returnIp, const char* im
 void MallocAfterLog(THREADID tid, VOID* retPtr, ADDRINT returnIp, const char* imgName) {
     TraceFile << "[AFTER] malloc from " << imgName
               << " returned ptr=" << retPtr << std::dec << std::endl;
-}
-
-void MallocBefore(THREADID tid, ADDRINT size, ADDRINT returnPointer)
-{
-
-    if (!IsWithinMainExec(returnPointer))
-    {
-        return;
-    }
-
-    if (KnobDebugLogs.Value())
-    {
-        if (ShouldWriteToFile()) {
-            TraceFile << "[DEBUG] [TID:" << tid << "][Malloc before] asked for " << size << " bytes of memory" << std::endl;
-        }
-    }
-
-    threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, tid));
-    threadData->sizeAsked = size;
-
-    // TraceFile << "Thread " << tid << " asked for 0x" << size << " bytes of memory" << std::endl;
-}
-
-void MallocAfter(THREADID tid, ADDRINT memPointer, ADDRINT returnPointer)
-{
-    if (KnobDebugLogs.Value())
-    {
-        if (ShouldWriteToFile()) {
-            TraceFile << "[DEBUG] [TID:" << tid << "][Malloc after] got 0x" << memPointer << std::endl;
-        }
-    }
-
-    if (!IsWithinMainExec(returnPointer))
-    {
-        return;
-    }
-
-    if (KnobDebugLogs.Value())
-    {
-        if (ShouldWriteToFile()) {
-            TraceFile << "[DEBUG] [TID:" << tid << "][Malloc after] got 0x" << memPointer << std::endl;
-        }
-    }
-
-    threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, tid));
-    threadData->sizeByPointer->insert({memPointer, threadData->sizeAsked});
-
-    if (KnobDebugLogs.Value())
-    {
-        if (ShouldWriteToFile()) {
-            TraceFile << "Thread " << tid << " got pointer 0x" << memPointer << " with 0x" << threadData->sizeAsked << " bytes of memory" << std::endl;
-            TraceFile << "{" << std::endl;
-            for (std::map<ADDRINT, ADDRINT>::iterator it = threadData->sizeByPointer->begin(); it != threadData->sizeByPointer->end(); it++) {
-                TraceFile << it->first << " : " << it -> second << "," << std::endl;
-            }
-            TraceFile << "}" << std::endl;
-        }
-    }
 }
 
 // Wrapper for malloc
@@ -1343,23 +1236,14 @@ VOID* MallocWrapper(THREADID threadid, size_t size, AFUNPTR originalMalloc, cons
                                 PIN_PARG_END());
 
 
-    if (KnobDebugLogs.Value()) {
-        if (ShouldWriteToFile()) {
-            TraceFile << "[DEBUG] [TID:" << threadid << "][Malloc Wrapper] asked for " << size << " and got pointer 0x" << ptr << std::endl;
-        }
-    }
+    DebugLog("[TID:", threadid, "][Malloc Wrapper] asked for ", std::dec, size, " and got pointer 0x", std::hex, ptr);
 
     // Consolidated logic: directly insert the malloc pointer and size into the thread data
     if (IsWithinMainExec(retIp)) {
         threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, threadid));
         threadData->sizeByPointer->insert({(ADDRINT)ptr, size});
 
-        if (KnobDebugLogs.Value()) {
-            if (ShouldWriteToFile()) {
-                TraceFile << "Saved: <0x" << (ADDRINT)ptr << "," << size << "> on malloc map" << std::endl;
-            }
-        }
-
+        DebugLog("Saved: <0x", (ADDRINT)ptr, ",", size, "> on malloc map")
     }
 
     return ptr;
@@ -1452,24 +1336,6 @@ void ImageLoad_cb(IMG Img, void *v)
         if (origMalloc == NULL) {
             TraceFile << "Failed to replace malloc" << std::endl;
         }
-
-        //RTN_Close(mallocRtn);
-
-        /*
-        RTN_Open(mallocRtn);
-
-        // Instrument malloc() to save the pointer and bytes asked by the thread
-        RTN_InsertCall(mallocRtn, IPOINT_BEFORE, (AFUNPTR)MallocBefore,
-                       IARG_THREAD_ID, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_RETURN_IP,
-                       IARG_END);
-        RTN_InsertCall(mallocRtn, IPOINT_AFTER, (AFUNPTR)MallocAfter,
-                       IARG_THREAD_ID, IARG_FUNCRET_EXITPOINT_VALUE, IARG_RETURN_IP,
-                       IARG_END);
-        // RTN_InsertCall(mallocRtn, IPOINT_AFTER, (AFUNPTR)MallocAfter,
-        //                IARG_FUNCRET_EXITPOINT_VALUE, IARG_END);
-
-        RTN_Close(mallocRtn);
-        */
     }
 
     // Find the free() function.
@@ -1510,11 +1376,7 @@ void ImageLoad_cb(IMG Img, void *v)
         main_begin = lowAddress;
         main_end = highAddress;
 
-        if (KnobDebugLogs.Value()) {
-            if (ShouldWriteToFile()) {
-                TraceFile << "< main_begin, main_end >: " << main_begin << ", " << main_end << std::endl;
-            }
-        }
+        DebugLog("< main_begin, main_end >: 0x", main_begin, ", ", main_end);
     }
     else
     {
@@ -1529,13 +1391,11 @@ void ImageLoad_cb(IMG Img, void *v)
             mod_data[imageName].begin = lowAddress;
             mod_data[imageName].end = highAddress;
         }
-        if (ShouldWriteToFile() && KnobDebugLogs.Value()) {
-            TraceFile << "[-] Loaded module: " << imageName << std::endl;
-            if (filtered)
-                TraceFile << "[!] Filtered " << imageName << std::endl;
-            TraceFile << "[-] Module base: 0x" << std::hex << lowAddress << std::endl;
-            TraceFile << "[-] Module end:  0x" << std::hex << highAddress << std::endl;
-        }
+
+        DebugLog("[-] Loaded module: ", imageName);
+        if (filtered) DebugLog("[!] Filtered ", imageName);
+        DebugLog("[-] Module base: 0x", std::hex, lowAddress, " and end: 0x", std::hex, highAddress, std::dec);
+
     }
     PIN_ReleaseLock(&_lock);
 }
@@ -1712,18 +1572,16 @@ void ThreadStart_cb(THREADID threadIndex, CONTEXT *ctxt, INT32 flags, VOID *v)
     if (InfoType >= T)
         bigcounter++;
     InfoType = T;
-    if (ShouldWriteToFile() && KnobDebugLogs.Value()) {
-        TraceFile << "[T]" << std::setw(10) << std::dec << bigcounter << std::hex << " Thread 0x" << PIN_ThreadUid() << " started. Flags: 0x" << std::hex << flags << std::endl;
-    }
+    DebugLog("[T]", std::setw(10), std::dec, bigcounter, std::hex, "Thread 0x", PIN_ThreadUid(), " started. Flags 0x", std::hex, flags);
     PIN_ReleaseLock(&_lock);
 }
 
 void ThreadFinish_cb(THREADID threadIndex, const CONTEXT *ctxt, INT32 code, VOID *v)
 {
     PIN_GetLock(&_lock, threadIndex + 1);
-    if (ShouldWriteToFile() && KnobDebugLogs.Value()) {
-        TraceFile << "[T]" << std::setw(10) << std::dec << bigcounter << std::hex << " Thread 0x" << PIN_ThreadUid() << " finished. Code: " << std::dec << code << std::endl;
-    }
+
+    DebugLog("[T]", std::setw(10), std::dec, bigcounter, std::hex, " Thread 0x", PIN_ThreadUid(), " finished. Code: ", std::dec, code)
+
     // free data saved by thread
     threadData_t *tdata = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, threadIndex));
     delete tdata;
@@ -1909,14 +1767,8 @@ int main(int argc, char *argv[])
 #endif
         var_byte_size = KnobVarByteSize.Value();
 
-        if (KnobDebugLogs.Value())
-        {
-            if (ShouldWriteToFile()) {
-                TraceFile << "Using Function name: " << function_name << std::endl;
-                TraceFile << "Using Variable name: " << variable_name;
-                TraceFile << " with size " << std::dec << var_byte_size << std::endl;
-            }
-        }
+        DebugLog("Using Function name: ", function_name);
+        DebugLog("Using Variable name: ", variable_name, " with size ", std::dec, var_byte_size);
 
         //std::string command = "/home//Desktop/tesis/prueba/tool " + function_name + " " + variable_name + " " + std::string(argv[argc - 1]);
         std::string command = dwgrepGetLowPCHighPCAndOffsetCommand( std::string(argv[argc - 1]), function_name, variable_name);
@@ -1927,13 +1779,8 @@ int main(int argc, char *argv[])
             std::cerr << "ERR: failed getting data from debug section" << std::endl;
         }
 
-        if (KnobDebugLogs.Value())
-        {
-            if (ShouldWriteToFile()) {
-                TraceFile << "Command ran: " << command << std::endl;
-                TraceFile << "Output from tool: " << lowpc_highpc_varoffset << std::endl;
-            }
-        }
+        DebugLog("Command ran: ", command);
+        DebugLog("Output from tool: ", lowpc_highpc_varoffset);
 
         std::vector<std::string> debug_info = splitstring(lowpc_highpc_varoffset, ',');
         if (debug_info.size() != 3)
@@ -1959,12 +1806,8 @@ int main(int argc, char *argv[])
             return 1; // Exit with an error code
         }
 
-        if (KnobDebugLogs.Value()) {
-            if (ShouldWriteToFile()) {
-                TraceFile << "Func offset: 0x" << std::hex << std::uppercase << func_offset << std::endl;
-                TraceFile << "Var offset: 0x" << var_offset << " Var offset - ADDRINT(16): 0x" << var_offset - ADDRINT(16) << std::dec << std::endl;
-            }
-        }
+        DebugLog("Func offset: 0x", std::hex, std::uppercase, func_offset);
+        DebugLog("Var offset: 0x", var_offset, " Var offset - ADDRINT(16): 0x", var_offset - ADDRINT(16), std::dec);
 
         // Important to calculate CFA, for clang++ CFA = RBP, for g++ CFA = RBP + 16
         command = dwgrepGetProducer(std::string(argv[argc - 1]));
@@ -2052,17 +1895,15 @@ int main(int argc, char *argv[])
 
     // TraceName = KnobOutputFile.Value();
 
-    if (ShouldWriteToFile() && KnobDebugLogs.Value()) {
-        TraceFile << "#" << std::endl;
-        TraceFile << "# Instruction Trace Generated By Roswell TracerPin " GIT_DESC << std::endl;
-        TraceFile << "#" << std::endl;
-        TraceFile << "[*] Arguments:" << std::endl;
-        for (int nArg = 0; nArg < argc; nArg++)
-            TraceFile << "[*]" << std::setw(5) << nArg << ": " << argv[nArg] << std::endl;
-        TraceFile.unsetf(std::ios::showbase);
-    }
+    DebugLog("#");
+    DebugLog("# Instruction Trace Generated By Matias Giampaolo, inspired by Roswell TracerPin " GIT_DESC);
+    DebugLog("#");
+    DebugLog("[*] Arguments:");
+    for (int nArg = 0; nArg < argc; nArg++)
+        DebugLog("[*]" << std::setw(5) << nArg << ": " << argv[nArg]);
+    DebugLog("", std::dec)
 
-    IMG_AddInstrumentFunction(ImageLoad_cb, 0);
+        IMG_AddInstrumentFunction(ImageLoad_cb, 0);
     PIN_AddThreadStartFunction(ThreadStart_cb, 0);
     PIN_AddThreadFiniFunction(ThreadFinish_cb, 0);
     TRACE_AddInstrumentFunction(Trace_cb, 0);

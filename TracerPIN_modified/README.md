@@ -64,7 +64,7 @@ libzstd-dev
 bison
 ```
 
-you may need to also update **`LD_LIBRARY_PATH`** to include the path to *libzwerg* (dependency of `dwgrep`). Usually on *`/usr/local/lib64`*
+you also may need to update **`LD_LIBRARY_PATH`** to include the path to *libzwerg* (dependency of `dwgrep`). Usually on *`/usr/local/lib64`*
 
 
 ---
