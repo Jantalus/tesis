@@ -412,120 +412,6 @@ enum LogTypeType
 
 LogTypeType LogType = HUMAN;
 
-// Timing utility class
-/*
-class FunctionTimer
-{
-private:
-    std::ofstream timingFile;
-    std::map<std::string, std::chrono::high_resolution_clock::time_point> startTimes;
-    std::map<std::string, double> totalTimes;
-    std::map<std::string, int> callCounts;
-    PIN_LOCK timingLock;
-
-public:
-    FunctionTimer()
-    {
-        // Open timing file on desktop
-        std::string homeDir = std::getenv("HOME") ? std::getenv("HOME") : "/home/mgiampaolo";
-        std::string timingFilePath = homeDir + "/Desktop/function_timing.txt";
-        timingFile.open(timingFilePath.c_str());
-        if (timingFile.is_open())
-        {
-            timingFile << "Function Timing Log - TracerPIN" << std::endl;
-            timingFile << "=================================" << std::endl;
-            timingFile << std::endl;
-        }
-    }
-
-    ~FunctionTimer()
-    {
-        if (timingFile.is_open())
-        {
-            timingFile.close();
-        }
-    }
-
-    void startTimer(const std::string &functionName)
-    {
-        PIN_GetLock(&timingLock, 0);
-        startTimes[functionName] = std::chrono::high_resolution_clock::now();
-        PIN_ReleaseLock(&timingLock);
-    }
-
-    void endTimer(const std::string &functionName)
-    {
-        PIN_GetLock(&timingLock, 0);
-        auto endTime = std::chrono::high_resolution_clock::now();
-
-        if (startTimes.find(functionName) != startTimes.end())
-        {
-            auto startTime = startTimes[functionName];
-            auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
-            double microseconds = duration.count();
-
-            totalTimes[functionName] += microseconds;
-            callCounts[functionName]++;
-
-            // Remove the start time to free memory
-            startTimes.erase(functionName);
-        }
-
-        PIN_ReleaseLock(&timingLock);
-    }
-
-    void printSummary()
-    {
-        if (timingFile.is_open())
-        {
-            timingFile << "FUNCTION TIMING SUMMARY:" << std::endl;
-            timingFile << "========================" << std::endl;
-            timingFile << std::endl;
-
-            for (const auto &pair : totalTimes)
-            {
-                const std::string &funcName = pair.first;
-                double totalTimeMicroseconds = pair.second;
-                int calls = callCounts[funcName];
-                double avgTimeMicroseconds = calls > 0 ? totalTimeMicroseconds / calls : 0;
-
-                // Convert to milliseconds
-                double totalTimeMs = totalTimeMicroseconds / 1000.0;
-                double avgTimeMs = avgTimeMicroseconds / 1000.0;
-
-                timingFile << funcName << ":" << std::endl;
-                timingFile << "  Total calls: " << calls << std::endl;
-                timingFile << "  Total time: " << totalTimeMs << " milliseconds" << std::endl;
-                timingFile << "  Average time: " << avgTimeMs << " milliseconds" << std::endl;
-                timingFile << std::endl;
-            }
-
-            // Print grand totals
-            double grandTotalTimeMicroseconds = 0;
-            int grandTotalCalls = 0;
-            for (const auto &pair : totalTimes)
-            {
-                grandTotalTimeMicroseconds += pair.second;
-                grandTotalCalls += callCounts[pair.first];
-            }
-
-            // Convert to seconds
-            double grandTotalTimeSeconds = grandTotalTimeMicroseconds / 1000000.0;
-            double avgTimeSeconds = grandTotalCalls > 0 ? grandTotalTimeSeconds / grandTotalCalls : 0;
-
-            timingFile << "GRAND TOTALS:" << std::endl;
-            timingFile << "=============" << std::endl;
-            timingFile << "Total function calls: " << grandTotalCalls << std::endl;
-            timingFile << "Total execution time: " << grandTotalTimeSeconds << " seconds" << std::endl;
-            timingFile << "Average time per call: " << avgTimeSeconds << " seconds" << std::endl;
-        }
-    }
-};
-
-// Global timing instance
-static FunctionTimer *g_timer = nullptr;
-*/
-
 /* ============================================================================= */
 /* Intel PIN (3.7) is missing implementations of many C functions, we implement  */
 /* them here. THESE ARE NOT UNIVERSALLY COMPATIBLE, DO NOT USE OUTSIDE TracerPIN */
@@ -1237,7 +1123,7 @@ VOID* MallocWrapper(THREADID threadid, size_t size, AFUNPTR originalMalloc, cons
         threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, threadid));
         threadData->sizeByPointer->insert({(ADDRINT)ptr, size});
 
-        DebugLog("Saved: <0x", (ADDRINT)ptr, ",", size, "> on malloc map")
+        DebugLog("Saved: <0x", (ADDRINT)ptr, ",", size, "> on malloc map");
     }
 
     return ptr;
@@ -1370,7 +1256,7 @@ void ImageLoad_cb(IMG Img, void *v)
         main_begin = lowAddress;
         main_end = highAddress;
 
-        DebugLog("< main_begin, main_end >: 0x", main_begin, ", ", main_end);
+        DebugLog("< main_begin, main_end >: 0x", std::hex, main_begin, ", 0x", main_end, std::dec);
     }
     else
     {
@@ -1574,7 +1460,7 @@ void ThreadFinish_cb(THREADID threadIndex, const CONTEXT *ctxt, INT32 code, VOID
 {
     PIN_GetLock(&_lock, threadIndex + 1);
 
-    DebugLog("[T]", std::setw(10), std::dec, bigcounter, std::hex, " Thread 0x", PIN_ThreadUid(), " finished. Code: ", std::dec, code)
+    DebugLog("[T]", std::setw(10), std::dec, bigcounter, std::hex, " Thread 0x", PIN_ThreadUid(), " finished. Code: ", std::dec, code);
 
     // free data saved by thread
     threadData_t *tdata = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, threadIndex));
@@ -1730,15 +1616,12 @@ int main(int argc, char *argv[])
     // Only open the file if file output is enabled
     if (enableFileOutput) {
         TraceFile.open(TraceName.c_str());
-        if (TraceFile.fail())
-        {
+        if (TraceFile.fail()) {
             std::cerr << "[!] Something went wrong opening the log file..." << std::endl;
             return -1;
         }
-        else
-        {
-            if (!KnobQuiet.Value())
-            {
+        else {
+            if (!KnobQuiet.Value()) {
                 std::cerr << "[*] Trace file " << TraceName << " opened for writing..." << std::endl
                           << std::endl;
             }
@@ -1753,8 +1636,7 @@ int main(int argc, char *argv[])
     function_name = KnobFunctionName.Value();
 
     filter_by_dwarf = (function_name != "" && variable_name != "");
-    if (filter_by_dwarf)
-    {
+    if (filter_by_dwarf) {
 #if !defined(TARGET_IA32E)
         std::cerr << "TARGET IA32e not defined and can't access register data (particularly RBP) for PIN CONTEXT" << std::endl;
         return 1;
@@ -1887,15 +1769,13 @@ int main(int argc, char *argv[])
     }
     filter_live_n = KnobLogFilterLiveN.Value();
 
-    // TraceName = KnobOutputFile.Value();
-
     DebugLog("#");
     DebugLog("# Instruction Trace Generated By Matias Giampaolo, inspired by Roswell TracerPin " GIT_DESC);
     DebugLog("#");
     DebugLog("[*] Arguments:");
     for (int nArg = 0; nArg < argc; nArg++)
-        DebugLog("[*]" << std::setw(5) << nArg << ": " << argv[nArg]);
-    DebugLog("", std::dec)
+        DebugLog("[*]", std::setw(5), nArg, ": ", argv[nArg]);
+    DebugLog("", std::dec);
 
         IMG_AddInstrumentFunction(ImageLoad_cb, 0);
     PIN_AddThreadStartFunction(ThreadStart_cb, 0);

@@ -138,14 +138,14 @@ More details about options are listed when running `Tracer` command in the *CLI*
 | Option | Description | Default value |
 | ------ | ----------- | ------------- |
 | `-o <path_to_file>` | Define where the log is saved | *trace-full-info.txt* |
-| `-vname <var_name>` | Name of variable to be traced. Use with `-fname` | "" |
-| `-fname <func_name>` | Name of function to search for `<var_name>`. Use with `-vname` | "" |
-| `-vs n` | Size of variable in bytes. To trace **static** variables | 0 |
+| `-vname <var_name>` | [(*)](#aclaration) Name of variable to be traced. Use with `-fname` | "" |
+| `-fname <func_name>` |[(*)](#aclaration) Name of function to search for `<var_name>`. Use with `-vname` | "" |
+| `-vs n` | [(*)](#aclaration) Size of variable in bytes. To trace **static** variables | 0 |
 | `-td 0/1` | Discriminate on memory logs. (`[Owner][Accessing]`) | 0 |
 | `-i 0/1` | Log all instructions | 0 |
 | `-m 0/1` | Log all memory access | 1 |
 | `-recursive 0/1` | Recursively trace malloced memory.  i.e. tracing a dynamic var that gets written other pointers to the heap (a `**int`) . Only used with `-fname -vname` | 1 |
-| `-b 0/1` | Log all basic blocks [(*)](https://software.intel.com/sites/landingpage/pintool/docs/98484/Pin/html/index.html) | 0 |
+| `-b 0/1` | Log all basic blocks [(PIN BBL definition)](https://software.intel.com/sites/landingpage/pintool/docs/98484/Pin/html/index.html) | 0 |
 | `-c 0/1` | Log all calls | 0 |
 | `-C 0/1` | Log all calls with their first thre args | 0 |
 | `-f 0/1/2` | (0) no filter (1) filter system libraries (2) filter all but main exec | 1 |
@@ -156,8 +156,18 @@ More details about options are listed when running `Tracer` command in the *CLI*
 | `-d 0/1` | Turn on debug logs. You can add your own with the function `DebugLog`, see examples in the code | 0 |
 | `-f 0/1` | Enable file output | 1 |
 
+<a id="aclaration"></a>
+> (*): This options won't work if the executable doesn't have debug information
+
+### Executable considerations
+If you wish to trace a specific variable you must assure that the executable is compiled with the following parameters (for `clang++/g++`):
+
+* `-g` to include debugging information
+* `-g-dwarf-4` given that the tool reads based on this debug format, to format to *DWARF 4* standard
+* `-fno-omit-frame-pointer` to keep the stack frame and maintain consistent behaviour 
+
 ### About static variables
-*DWARF* debug data doesn't provide information about static variables and their size. For example a fixed array of `int`. That's why when trying to trace an static array you need to indicate the size of the variable with the `-vs` option, and reading from the code. This can be a problem if the static variable space is instantiated with a dynamic size: `int myArray[variable]`
+Debug data doesn't provide information about static variables and their size. For example a fixed array of `int`. That's why when trying to trace an static array you need to indicate the size of the variable with the `-vs` option, and reading from the code. This can be a problem if the static variable space is instantiated with a dynamic size: `int myArray[variable]`
 
 If the variable is simply a primitive type, you can check the byte size with the next command:
 
@@ -173,7 +183,7 @@ V @DW_AT_type @DW_AT_byte_size
 
 ### Filtering information
 
-```
+```smalltalk
 If no option is provided only memory accesses are logged: [R]/[W]
 ```
 
@@ -196,9 +206,17 @@ Examples for tracing variables
 ------------------------------
 In this section we'll display several examples focusing on the trace of a specific variable in a function, be it static or dynamic.
 
-### Static Variables
+Refer to the [examples.cpp](examples.cpp) file.
 
-#### Primitive type
+Compile the example
+```bash
+g++ -fno-omit-frame-pointer examples.cpp -gdwarf-4 -g -o compiled
+```
+
+### Static Variables
+> We need the `-fname`, `-vname` and `-vs`
+
+#### Primitive type *(Ex 1)*
 
 ```cpp
 int myFunction(int a) {
@@ -208,6 +226,7 @@ int myFunction(int a) {
   return myVar;
 }
 ```
+
 You would trace the variable `myVar` with:
 
 ```bash
@@ -256,7 +275,7 @@ and get:
 If you know the byte size of another variable that isn't a primitive type (or pointer to) but the size is fixed, you could indicate the size with the `-vs` parameter. 
 
 ### Dynamic Variables
-> In this cases we just need the `-fname` and `-vname`.
+> In this case we just need the `-fname` and `-vname`
 
 Here we have more potential cases, because we trace the memory requested by the executable with `malloc`.
 
@@ -286,11 +305,11 @@ int main() {
 }
 ```
 
-If indicate to the tool to trace `-fname main -vname var` you would get all the writes and reads (from *Point 1* and onwards / or until freed).
+If you indicate to the tool to trace 
 
-`-fname indirection -vname copy` you would get the the write and reads from *Point 2* and onwards / or until freed.
-
-`-fname indirection2 -vname copy` you would get the the write and reads from *Point 3* and onwards / or until freed.
+* `-fname main -vname var` you would get all the writes and reads (from *Point 1* and onwards / or until freed).
+* `-fname indirection -vname copy` you would get the the write and reads from *Point 2* and onwards / or until freed.
+* `-fname indirection2 -vname copy` you would get the the write and reads from *Point 3* and onwards / or until freed.
 
 This is because the instrumentation logic is modeled to start tracing from the function that asked for the memory (in this case **main**).
 
