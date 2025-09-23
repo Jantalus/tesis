@@ -601,7 +601,6 @@ bool IsWithinMainExec(ADDRINT addr)
 
 bool IsWithinDwarfFunction(ADDRINT addr)
 {
-    // In case of not passing -did option, this will always return false: address can't be >= addr_main and < at the same time
     return (addr >= (main_begin + func_offset)) && (addr < (main_begin + func_offset + func_totalbytes));
 }
 
@@ -885,11 +884,6 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
             // DYNAMIC VARIABLE
             std::map<ADDRINT, ADDRINT> *sizeByPointer = threadData->sizeByPointer;
             if (IsWithinDwarfFunction(ip)) {
-                /*
-                ADDRINT sixteenBytes = ADDRINT(16);
-                ADDRINT trueOffset = var_offset - sixteenBytes;
-                ADDRINT varInStack = rbpValue - trueOffset;
-                */
                 ADDRINT varInStack = calculateVarOffset(rbpValue);
 
 

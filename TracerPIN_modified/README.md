@@ -144,7 +144,7 @@ More details about options are listed when running `Tracer` command in the *CLI*
 | `-td 0/1` | Discriminate on memory logs. (`[Owner][Accessing]`) | 0 |
 | `-i 0/1` | Log all instructions | 0 |
 | `-m 0/1` | Log all memory access | 1 |
-| `-recursive 0/1` | Recursively trace malloced memory.  i.e. tracing a dynamic var that gets written other pointers to the heap (a `*[][]int`) . Only used with `-fname -vname` | 1 |
+| `-recursive 0/1` | Recursively trace malloced memory.  i.e. tracing a dynamic var that gets written other pointers to the heap (a `**int`) . Only used with `-fname -vname` | 1 |
 | `-b 0/1` | Log all basic blocks [(*)](https://software.intel.com/sites/landingpage/pintool/docs/98484/Pin/html/index.html) | 0 |
 | `-c 0/1` | Log all calls | 0 |
 | `-C 0/1` | Log all calls with their first thre args | 0 |
@@ -153,8 +153,23 @@ More details about options are listed when running `Tracer` command in the *CLI*
 | `-n 0/n` | Filter *n* occurrences, only with `-F` | 0 |
 | `-q 0/1` | Be quiet under normal conditions | 0 |
 | `-excl 0/1` | Exclude instrumentation outside main image | 1 |
-| `-d 0/1` | Turn on debug logs. **Best to adjust code** | 0 |
+| `-d 0/1` | Turn on debug logs. You can add your own with the function `DebugLog`, see examples in the code | 0 |
 | `-f 0/1` | Enable file output | 1 |
+
+### About static variables
+*DWARF* debug data doesn't provide information about static variables and their size. For example a fixed array of `int`. That's why when trying to trace an static array you need to indicate the size of the variable with the `-vs` option, and reading from the code. This can be a problem if the static variable space is instantiated with a dynamic size: `int myArray[variable]`
+
+If the variable is simply a primitive type, you can check the byte size with the next command:
+
+```
+dwgrep <your_executable> -e '(
+|D|
+let F := D entry ?DW_TAG_subprogram (@DW_AT_name == <your_func_name>); 
+let V := F child ?TAG_variable (@DW_AT_name == <your_var_name>); 
+
+V @DW_AT_type @DW_AT_byte_size
+)'
+```
 
 ### Filtering information
 
@@ -176,6 +191,252 @@ indications when to instrument, e.g. when you want to capture only a specific it
 To do so, use option `-F 0x400000:0x410000`. This time the addresses serve as a start and stop indicators,
 not as an address range, and it's possible to target a specific iteration with the option `-n`,
 while by default all iterations will be recorded.
+
+Examples for tracing variables
+------------------------------
+In this section we'll display several examples focusing on the trace of a specific variable in a function, be it static or dynamic.
+
+### Static Variables
+
+#### Primitive type
+
+```cpp
+int myFunction(int a) {
+  int myVar = 10;
+  myVar = a + 2;
+
+  return myVar;
+}
+```
+You would trace the variable `myVar` with:
+
+```bash
+Tracer -fname myFunction -vname myVar -vs 4 -o my_log_file.log -- executable
+```
+
+and with `a=2` we would get:
+
+```smalltalk
+[W]0x00007fffffffe00c 0x0000000a
+[W]0x00007fffffffe00c 0x00000004
+[R]0x00007fffffffe00c 0x00000004
+```
+
+#### Array of primitive type
+
+```cpp
+void myFunction() {
+  int myTenPositionVector[10];
+
+  for (int i = 0; i < 10; i++) {
+    myTenPositionVector[i] = i;
+  }
+}
+```
+You would run (considering `int` occupies 4 bytes):
+```
+Tracer -fname myFunction -vname myTenPositionVector -vs 40 -o my_log_file.log -- executable
+```
+
+and get:
+```smalltalk
+[W]0x00007fffffffdfe0 0x00000000
+[W]0x00007fffffffdfe4 0x00000001
+[W]0x00007fffffffdfe8 0x00000002
+[W]0x00007fffffffdfec 0x00000003
+[W]0x00007fffffffdff0 0x00000004
+[W]0x00007fffffffdff4 0x00000005
+[W]0x00007fffffffdff8 0x00000006
+[W]0x00007fffffffdffc 0x00000007
+[W]0x00007fffffffe000 0x00000008
+[W]0x00007fffffffe004 0x00000009
+```
+
+#### Other cases
+If you know the byte size of another variable that isn't a primitive type (or pointer to) but the size is fixed, you could indicate the size with the `-vs` parameter. 
+
+### Dynamic Variables
+> In this cases we just need the `-fname` and `-vname`.
+
+Here we have more potential cases, because we trace the memory requested by the executable with `malloc`.
+
+#### Important note !!
+
+There's a particular case you ought to look out for:
+when reaching the function where you write to the variable you indicated by `-vname`, then the region of memory will **always be traced** regardless of where it is being written.
+So if your program passes the pointer to the memory to different functions and threads the best option is to indicate by parameter the function that originally caledd `malloc`. 
+
+To better understand, for example suppose you do something like this:
+```cpp
+void indirection(int* pointer, int size) {
+	int* copy = pointer;
+	// write to copy
+}
+
+void indirection2(int* pointer, int size) {
+	int* copy = pointer;
+	// write to copy
+}
+
+int main() {
+	int* var = malloc(...); // Point 1
+	var[i] = ...;
+	indirection(var, ...); // Point 2
+	indirection2(var, ...); // Point 3
+}
+```
+
+If indicate to the tool to trace `-fname main -vname var` you would get all the writes and reads (from *Point 1* and onwards / or until freed).
+
+`-fname indirection -vname copy` you would get the the write and reads from *Point 2* and onwards / or until freed.
+
+`-fname indirection2 -vname copy` you would get the the write and reads from *Point 3* and onwards / or until freed.
+
+This is because the instrumentation logic is modeled to start tracing from the function that asked for the memory (in this case **main**).
+
+
+#### Malloc and write
+
+```cpp
+void instantiateAndWriteSomeArr() {
+  int totalSize = 5;
+  int *otherArr = (int *)malloc(totalSize * sizeof(int));
+
+  for (int i = 0; i < totalSize; i++) {
+    otherArr[i] = i + 1;
+  }
+
+  free(otherArr);
+}
+```
+
+```
+Tracer -fname instantiateAndWriteSomeArr -vname otherArr -o my_log_file.log -- executable
+```
+
+```smalltalk
+[W]0x00007fffffffe008 0x000055555556d5e0
+[W]0x000055555556d5e0 0x00000001
+[W]0x000055555556d5e4 0x00000002
+[W]0x000055555556d5e8 0x00000003
+[W]0x000055555556d5ec 0x00000004
+[W]0x000055555556d5f0 0x00000005
+```
+
+Notice here that we get also get the pointer returned by `malloc`
+
+#### Write to the pointer of memory outside of the function
+
+```cpp
+void indirection(int* myArrPointer, int size) {
+  for (int i = 0; i < size; i++) {
+    myArrPointer[i] = i;
+  }
+}
+
+int main() {
+  int totalSize = 5;
+  int *arr = (int *)malloc(totalSize * sizeof(int));
+
+  for (int i = 0; i < totalSize; i++) {
+    arr[i] = i * 10;
+  }
+
+  indireccion(arr, totalSize);
+}
+```
+the memory region will be traced wherever is written. Here we'll trace the writes inside `main` and the ones in the `indirection` function.
+
+```
+Tracer -fname main -vname arr -o my_log_file.log -- executable
+```
+
+```smalltalk
+[W]0x00007fffffffe070 0x000055555556d320
+[W]0x000055555556d320 0x00000000
+[W]0x000055555556d324 0x0000000a
+[W]0x000055555556d328 0x00000014
+[W]0x000055555556d32c 0x0000001e
+[W]0x000055555556d330 0x00000028
+[W]0x000055555556d320 0x00000000
+[W]0x000055555556d324 0x00000001
+[W]0x000055555556d328 0x00000002
+[W]0x000055555556d32c 0x00000003
+[W]0x000055555556d330 0x00000004
+```
+#### Write outside of function and other thread
+
+In this case the option `-td 1` would come handy to distinguish which thread is writing the memory region.
+
+```cpp
+void indirection(int* myArrPointer, int size) {
+  for (int i = 0; i < size; i++) {
+    myArrPointer[i] = i*2;
+  }
+}
+
+int main() {
+  int totalSize = 5;
+  int *arr = (int *)malloc(totalSize * sizeof(int));
+
+  for (int i = 0; i < totalSize; i++) {
+    arr[i] = i * 10;
+  }
+
+  std::thread t(indirection, arr, totalSize);
+  t.join();
+  ...
+}
+```
+this would trace the writes in `main` and the ones by thread `t`:
+
+```
+Tracer -td 1 -fname main -vname arr -o my_log_file.log -- executable
+```
+
+```smalltalk
+[W][0][0]0x00007fffffffe070 0x000055555556d320
+[W][0][0]0x000055555556d320 0x00000000
+[W][0][0]0x000055555556d324 0x0000000a
+[W][0][0]0x000055555556d328 0x00000014
+[W][0][0]0x000055555556d32c 0x0000001e
+[W][0][0]0x000055555556d330 0x00000028
+[W][1][0]0x000055555556d320 0x00000000
+[W][1][0]0x000055555556d324 0x00000002
+[W][1][0]0x000055555556d328 0x00000004
+[W][1][0]0x000055555556d32c 0x00000006
+[W][1][0]0x000055555556d330 0x00000008
+```
+Having `[OperatorThreadID][OwnerThreadID]` (`[1][0]`)
+
+#### Write outside of the main image
+This would be for example using the `std::strcpy` function:
+
+```cpp
+int main() {
+  char* hello = (char *)malloc(20 * sizeof(char));
+  std::strcpy(hello, "Hello");
+}
+```
+
+```
+Tracer -fname main -vname hello -o my_log_file.log -- executable
+```
+
+
+```smalltalk
+[W]0x00007fffffffe080 0x000055555556d600
+[W]0x000055555556d600 0x6c6c6548
+[W]0x000055555556d604 0x006f
+[R]0x000055555556d601 0x65
+[W]0x000055555556d600 0x00414c42
+```
+
+Being: 
+```
+6c6c6548 = lleH
+006f = \0o
+```
 
 
 Troubleshooting

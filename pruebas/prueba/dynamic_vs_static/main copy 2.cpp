@@ -18,49 +18,18 @@
 // Agregame parametros y fijate como son los DIEs
 //
 //
-void myFunction(int a, int b, int c) {
+void myFunction() {
   int myTenPositionVector[10];
 
-  for (int primerIndice = 0; primerIndice < 10; primerIndice++)
-  {
-    myTenPositionVector[primerIndice] = a;
+  for (int i = 0; i < 10; i++) {
+    myTenPositionVector[i] = i;
   }
-
-  for (int segundoIndice = 0; segundoIndice < 10; segundoIndice++)
-  {
-    myTenPositionVector[segundoIndice] = b;
-  }
-
-
-  int miSumaTotal = 0;
-
-  for (int cuartoIndice = 0; cuartoIndice < 10; cuartoIndice++)
-  {
-    miSumaTotal = miSumaTotal + myTenPositionVector[cuartoIndice];
-  }
-  for (int quintoIndice = 0; quintoIndice < 10; quintoIndice = quintoIndice + 2)
-  {
-    miSumaTotal = miSumaTotal + 2 * myTenPositionVector[quintoIndice] + c;
-  }
-
-  FILE *fid = fopen("caca.txt", "w");
-  if (fid == nullptr)
-  {
-    perror("Error opening file");
-    return;
-  }
-  fprintf(fid, "Mi suma total = %d\n", miSumaTotal);
-  fclose(fid);
-
-  /*
-  auto a = asd->bla;
-  printf("Auto variable del struct a=%d\n", a);
-   */
 }
 
 void indireccion(int* miArr, int size) {
+  int* copy = miArr;
   for (int i = 0; i < size; i++) {
-    miArr[i] = i;
+    copy[i] = i;
   }
 }
 
@@ -71,8 +40,8 @@ void indireccion2(int* miArr, int size) {
 }
 
 void instantiateAndWriteSomeArr() {
-  int totalSize = 5;                                 // Number of elements
-  int *otherArr = (int *)malloc(totalSize * sizeof(int)); // Allocate memory for n integers
+  int totalSize = 5;
+  int *otherArr = (int *)malloc(totalSize * sizeof(int));
 
   for (int i = 0; i < totalSize; i++) {
     otherArr[i] = i + 1;
@@ -93,11 +62,11 @@ int myFunction2(int a) {
 }
 
 int main() {
-  int totalSize = 5;                                 // Number of elements
-  int *arr = (int *)malloc(totalSize * sizeof(int)); // Allocate memory for n integers
+  int totalSize = 5;
+  int *arr = (int *)malloc(totalSize * sizeof(int));
 
   for (int i = 0; i < totalSize; i++) {
-    arr[i] = i * 10; // Store multiples of 10
+    arr[i] = i * 10;
   }
 
   indireccion(arr, totalSize);
@@ -152,7 +121,7 @@ int main() {
 
   fclose(fid);
 
-  myFunction(1, 2, 3);
+  myFunction();
   int rows = 3, cols = 4;
 
   // Allocate array of row pointers
