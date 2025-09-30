@@ -286,8 +286,7 @@ std::string FormatTraceEntry(const MemoryTraceEntry& entry) {
 }
 
 // Thread function to write buffer to file
-void WriteBufferToFile(void* arg)
-{
+void WriteBufferToFile(void* arg) {
     // Extract buffer info from argument
     WriteBufferArgs* args = static_cast<WriteBufferArgs*>(arg);
     BufferInfo* bufferInfo = args->bufferInfo;
@@ -349,9 +348,13 @@ ADDRINT func_offset = 0;
 ADDRINT func_totalbytes = 0;
 
 bool isGnuCompiled = false;
+
+INT64 global_var_offset = 0;
+bool filter_global_var = false;
+
 INT64 var_offset = 0;
 UINT64 var_byte_size = 0;
-bool filter_by_dwarf = false;
+bool filter_local_var = false;
 
 struct VariableMemoryLocation
 {
@@ -485,8 +488,7 @@ bool IsWithinMainExec(ADDRINT addr)
     return (main_begin <= addr && addr <= main_end);
 }
 
-bool IsWithinDwarfFunction(ADDRINT addr)
-{
+bool IsWithinDwarfFunction(ADDRINT addr) {
     return (addr >= (main_begin + func_offset)) && (addr < (main_begin + func_offset + func_totalbytes));
 }
 
@@ -733,7 +735,7 @@ ADDRINT calculateVarOffset(ADDRINT rbpValue) {
         #if defined(TARGET_IA32E)
         offsetFromCFA = ADDRINT(16); // Usual offset for x86_64 is 16B
         #elif defined(TARGET_IA32)
-        offsetFromCFA = ADDRINT(8); // Usual offset for x86_64 is 16B
+        offsetFromCFA = ADDRINT(8); // Usual offset for x86 is 8B
         #endif
     }
 
@@ -749,10 +751,10 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
     THREADID threadOwnerOfX = 0;
     bool found = false;
 
-    // SECTION 1: DWARF Filtering
-    if (filter_by_dwarf) {
+    // SECTION 1: Local Variable Filtering
+    if (filter_local_var) {
         if (func_offset == 0) {
-            std::cerr << "Offset function 0, but filter_by_dwarf true" << std::endl;
+            std::cerr << "Offset function 0, but filter_local_var true" << std::endl;
         }
 
 
@@ -882,11 +884,6 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
 
             DebugLog("Address 0x", std::hex, ip, " in func address range", std::dec);
 
-            /*
-            ADDRINT sixteenBytes = ADDRINT(16);
-            ADDRINT trueOffset = var_offset - sixteenBytes;
-            ADDRINT varLowADDR = rbpValue - trueOffset;
-            */
             ADDRINT varLowADDR = calculateVarOffset(rbpValue);
             ADDRINT varHighADDR = varLowADDR + var_byte_size;
 
@@ -896,6 +893,13 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
 
             DebugLog("RBP VALUE: ", std::hex, rbpValue, std::dec);
             DebugLog("memory instruction over var of interest with varLowADDR 0x", std::hex, varLowADDR, " and varHighADDR 0x", std::hex, varHighADDR, std::dec);
+        }
+    } else if(filter_global_var) {
+        ADDRINT globalVarLowADDR = main_begin + global_var_offset;
+        ADDRINT globalVarHihghADDR = globalVarLowADDR + var_byte_size;
+
+        if (globalVarLowADDR> addr || globalVarHihghADDR <= addr) {
+            return;
         }
     }
 
@@ -960,8 +964,7 @@ static VOID RecordMemWrite(THREADID tid, ADDRINT ip)
 /* ================================================================================= */
 /* This is called for each instruction                                               */
 /* ================================================================================= */
-VOID Instruction_cb(INS ins, VOID *v)
-{
+VOID Instruction_cb(INS ins, VOID *v) {
     ADDRINT ceip = INS_Address(ins);
 
     // Either by -f -F filters, or by -fdid function lowpc and highpc address
@@ -971,11 +974,9 @@ VOID Instruction_cb(INS ins, VOID *v)
     }
 
 #if defined(TARGET_IA32E)
-    if (KnobLogMem.Value())
-    {
+    if (KnobLogMem.Value()) {
 
-        if (INS_IsMemoryRead(ins))
-        {
+        if (INS_IsMemoryRead(ins)) {
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordMem,
                 IARG_REG_VALUE, REG_RBP,
@@ -989,8 +990,7 @@ VOID Instruction_cb(INS ins, VOID *v)
                 IARG_END);
         }
 
-        if (INS_HasMemoryRead2(ins))
-        {
+        if (INS_HasMemoryRead2(ins)) {
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordMem,
                 IARG_REG_VALUE, REG_RBP,
@@ -1006,8 +1006,7 @@ VOID Instruction_cb(INS ins, VOID *v)
 
         // instruments stores using a predicated call, i.e.
         // the call happens iff the store will be actually executed
-        if (INS_IsMemoryWrite(ins))
-        {
+        if (INS_IsMemoryWrite(ins)) {
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordWriteAddrSize,
                 IARG_MEMORYWRITE_EA,
@@ -1015,16 +1014,14 @@ VOID Instruction_cb(INS ins, VOID *v)
                 IARG_REG_VALUE, REG_RBP,
                 IARG_END);
 
-            if (INS_HasFallThrough(ins))
-            {
+            if (INS_HasFallThrough(ins)) {
                 INS_InsertCall(
                     ins, IPOINT_AFTER, (AFUNPTR)RecordMemWrite,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
                     IARG_END);
             }
-            if (INS_IsControlFlow(ins))
-            {
+            if (INS_IsControlFlow(ins)) {
                 INS_InsertCall(
                     ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)RecordMemWrite,
                     IARG_THREAD_ID,
@@ -1035,8 +1032,7 @@ VOID Instruction_cb(INS ins, VOID *v)
     }
 #endif
 
-    if (KnobLogIns.Value())
-    { // && !filter_by_dwarf) { TODO: por que filtraba por esto?
+    if (KnobLogIns.Value()) {
         std::string *disass = new std::string(INS_Disassemble(ins));
         INS_InsertCall(
             ins, IPOINT_BEFORE, (AFUNPTR)printInst,
@@ -1053,16 +1049,14 @@ VOID Instruction_cb(INS ins, VOID *v)
 
 void FreeBefore(THREADID tid, ADDRINT pointerToFree, ADDRINT returnPointer)
 {
-    if (!IsWithinMainExec(returnPointer))
-    {
+    if (!IsWithinMainExec(returnPointer)) {
         return;
     }
 
     threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, tid));
     int i = 0;
     // Remove from local thread malloc pointers
-    for (std::map<ADDRINT, ADDRINT>::iterator it = threadData->sizeByPointer->begin(); it != threadData->sizeByPointer->end(); it++)
-    {
+    for (std::map<ADDRINT, ADDRINT>::iterator it = threadData->sizeByPointer->begin(); it != threadData->sizeByPointer->end(); it++) {
 
         DebugLog("Thread FREE", tid, "- MapElement", i, "of map is:", it->second);
 
@@ -1192,6 +1186,8 @@ void ImageLoad_cb(IMG Img, void *v)
 
 
     bool filtered = false;
+
+    //SYM_Address
 
     // Instrument malloc routine, for tracking dynamic variables
     RTN mallocRtn = RTN_FindByName(Img, MALLOC);
@@ -1557,6 +1553,17 @@ bool isGnuCompiler(const std::string& producer) {
     return producer.find("GNU C") != std::string::npos;
 }
 
+std::string dwgrepGetGlobalVarOffset(const std::string& executable,
+                                  const std::string& variable_name) {
+    std::string sanitized_v = sanitizeIdentifier(variable_name);
+
+    std::string command = "dwgrep " + executable + " -e '(|D| let V := D entry ?DW_TAG_variable (@DW_AT_name == \"" + sanitized_v + "\");" +
+                        "let Loc := V @DW_AT_location ?(elem label == DW_OP_addr) elem value;" + 
+                        "Loc \"%d\")'";
+
+    return command;
+}
+
 std::string dwgrepGetLowPCHighPCAndOffsetCommand(const std::string& executable,
                                   const std::string& function_name,
                                   const std::string& variable_name) {
@@ -1635,8 +1642,10 @@ int main(int argc, char *argv[])
     variable_name = KnobVariableName.Value();
     function_name = KnobFunctionName.Value();
 
-    filter_by_dwarf = (function_name != "" && variable_name != "");
-    if (filter_by_dwarf) {
+    filter_global_var = (function_name == "" && variable_name != "");
+
+    filter_local_var = (function_name != "" && variable_name != "");
+    if (filter_local_var) {
 #if !defined(TARGET_IA32E)
         std::cerr << "TARGET IA32e not defined and can't access register data (particularly RBP) for PIN CONTEXT" << std::endl;
         return 1;
@@ -1650,8 +1659,7 @@ int main(int argc, char *argv[])
         std::string command = dwgrepGetLowPCHighPCAndOffsetCommand( std::string(argv[argc - 1]), function_name, variable_name);
         std::string lowpc_highpc_varoffset = executeCommand(command);
 
-        if (lowpc_highpc_varoffset == "")
-        {
+        if (lowpc_highpc_varoffset == "") {
             std::cerr << "ERR: failed getting data from debug section" << std::endl;
         }
 
@@ -1689,6 +1697,17 @@ int main(int argc, char *argv[])
         command = dwgrepGetProducer(std::string(argv[argc - 1]));
         std::string producer = executeCommand(command);
         isGnuCompiled = isGnuCompiler(producer);
+    } else if (filter_global_var) {
+        var_byte_size = KnobVarByteSize.Value();
+        DebugLog("Using Variable name: ", variable_name, " with size ", std::dec, var_byte_size);
+
+        std::string command = dwgrepGetGlobalVarOffset(std::string(argv[argc - 1]), variable_name);
+
+        DebugLog("Command ran: ", command);
+
+        std::string globalVarOffsetString = executeCommand(command);
+
+        global_var_offset = std::stoi(globalVarOffsetString);
     }
 
     char *endptr;

@@ -5,7 +5,7 @@
 #include <string>
 #include <cstring>
 
-int globalMatrix[4] = {0};
+int globalArray[4] = {0};
 
 int primitiveType(int a) {
   int myVar = 10;
@@ -49,8 +49,9 @@ void indirectionString(char* punteroString) {
 
 
 int main() {
+  // Ex 0
   for(int i = 0; i < 4; i++)
-    globalMatrix[i] = 15;
+    globalArray[i] = 15;
 
   // Ex 1
   int d = primitiveType(2);
@@ -85,7 +86,7 @@ int main() {
   // Ex 6
   int anotherSize = 3;
   int *anotherArray = (int *)malloc(anotherSize * sizeof(int));
-  indirection(otherArr, otherTotalSize);
+  indirection(anotherArray, anotherSize);
   std::thread t(indirection, anotherArray, anotherSize);
 
   t.join();
@@ -104,10 +105,8 @@ int main() {
   // Ex 8
   int rows = 3, cols = 4;
 
-  // Allocate array of row pointers
   int** matrix = (int **)malloc(rows * sizeof(int *));
 
-  // Allocate each row
   for (int i = 0; i < rows; ++i){
     matrix[i] = (int *)malloc(cols * sizeof(int));
     // each write in matrix[i] will add the 
@@ -115,7 +114,7 @@ int main() {
   }
 
   for (int i = 0; i < rows; ++i){
-    matrix[i][0] = i; // Reads m[i] for each write
+    matrix[i][0] = i; // Reads m[i] for each write --> [R] and [W]
   }
 
   for (int i = 0; i < rows; ++i){
