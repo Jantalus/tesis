@@ -23,37 +23,42 @@ sudo apt-get install --no-install-recommends libstdc++-4.9-dev:i386 libssl-dev:i
 ```
 ---
 
-As well as installing the cli tool `dwgrep` from the [GitHub Repo](https://github.com/pmachata/dwgrep) and the installation steps in their [website](https://pmachata.github.io/dwgrep/#installation).
+As well as installing the cli tool `dwgrep` from the [GitHub Repo](https://github.com/pmachata/dwgrep), you can follow the installation steps in their [website](https://pmachata.github.io/dwgrep/#installation).
 
-To check if `dwgrep` is installed correctly try running the next command:
+To check if `dwgrep` is installed correctly run the following commands:
 ```bash
-dwgrep $(whereis ls) -e 'entry'
+cat > hello.c <<'EOF'
+#include <stdio.h>
+int main() { printf("Hello DWARF!\\n"); return 0; }
+EOF
 ```
+
+```bash
+gcc -g -gdwarf-4 -fno-omit-frame-pointer hello.c -o hello
+```
+
+```bash
+dwgrep hello -e 'entry ?DW_TAG_compile_unit'
+```
+
 you should get an output like the following:
 ```bash
-...
-[2e9d7]	subprogram
-	external	true
-	name	"rpl_realloc"
-	decl_file	"lib/stdlib.h"
-	decl_line	2067
-	decl_column	1
-	prototyped	true
-	type	[2e95c] pointer_type
-[2e9e4]	formal_parameter
-	name	"ptr"
-	decl_file	"lib/stdlib.h"
-	decl_line	2067
-	decl_column	20
-	type	[2e95c] pointer_type
-[2e9f1]	formal_parameter
-	name	"size"
-	decl_file	"lib/stdlib.h"
-	decl_line	2067
-	decl_column	32
-	type	[2e90a] typedef
-...
+[b]	compile_unit
+	producer	"GNU C23 15.2.1 20250813 -mtune=generic -march=x86-64 -g -gdwarf-4 -fno-omit-frame-pointer"
+	language	C99
+	name	"hello.c"
+	comp_dir	"/home/mgiampaolo"
+	low_pc	0x1139
+	high_pc	31
+	stmt_list	0
 ```
+
+And to clean the files up
+```bash
+rm hello*
+```
+
+
 
 If the execution fails you may need to install the next dependencies:
 ```
