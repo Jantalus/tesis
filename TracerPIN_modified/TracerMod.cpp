@@ -1639,8 +1639,17 @@ int main(int argc, char *argv[])
         }
     }
 
+    
+
     variable_name = KnobVariableName.Value();
     function_name = KnobFunctionName.Value();
+
+    
+    #ifn defined(TARGET_IA32E)
+    if (variable_name != "") {
+        std::cerr << "Architecture not x86. Can't find RBP to track variable" << std::endl;
+    }
+    #endif
 
     filter_global_var = (function_name == "" && variable_name != "");
 

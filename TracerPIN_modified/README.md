@@ -160,11 +160,11 @@ More details about options are listed when running `Tracer` command in the *CLI*
 > (*): This options won't work if the executable doesn't have debug information
 
 ### Executable considerations
-If you wish to trace a specific variable you must assure that the executable is compiled with the following parameters (for `clang++/g++`):
+If you wish to trace a specific variable you must assure that the executable is compiled with the following parameters (for `clang++/g++/..`):
 
 * `-g` to include debugging information
 * `-g-dwarf-4` given that the tool reads based on this debug format, to format to *DWARF 4* standard
-* `-fno-omit-frame-pointer` to keep the stack frame and maintain consistent behaviour 
+* `-fno-omit-frame-pointer` to keep the stack frame and maintain consistent behaviour for allocation of variable (pointers)
 
 ### About static variables
 Debug data doesn't provide information about static variables and their size. For example a fixed array of `int`. That's why when trying to trace an static array you need to indicate the size of the variable with the `-vs` option, and reading from the code. This can be a problem if the static variable space is instantiated with a dynamic size: `int myArray[variable]`
