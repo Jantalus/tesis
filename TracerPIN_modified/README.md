@@ -22,7 +22,7 @@ export PIN_ROOT=/opt/pin-3.30-98830-g1d7b601b3-gcc-linux
 echo -e "\nexport PIN_ROOT=/opt/pin-3.30-98830-g1d7b601b3-gcc-linux" >> ~/.bashrc
 ```
 
-Make sure the user has r/w access to the PIN installation and to ease the next steps define PIN_ROOT:
+Make sure the user has r/w access to the PIN installation and to ease the next steps define PIN_ROOT
 
 ---
 
@@ -180,7 +180,7 @@ If you wish to trace a specific variable you must assure that the executable is 
 * `-fno-omit-frame-pointer` to keep the stack frame and maintain consistent behaviour for allocation of variable (pointers)
 
 ### About static variables
-Debug data doesn't provide information about static variables and their size. For example a fixed array of `int`. That's why when trying to trace an static array you need to indicate the size of the variable with the `-vs` option, and reading from the code. This can be a problem if the static variable space is instantiated with a dynamic size: `int myArray[variable]`
+Debug data doesn't provide information about static variables and their size, for example a fixed array of `int`. That's why when trying to trace a static array you need to indicate the size of the variable with the `-vs` option. This can be a problem if the static variable space is instantiated with a dynamic size: `int myArray[variable]`
 
 If the variable is simply a primitive type, you can check the byte size with the next command:
 
@@ -196,7 +196,7 @@ V @DW_AT_type @DW_AT_byte_size
 
 ### Filtering information
 
-```smalltalk
+```txt
 If no option is provided only memory accesses are logged: [R]/[W]
 ```
 
@@ -217,13 +217,13 @@ while by default all iterations will be recorded.
 
 Examples for tracing variables
 ------------------------------
-In this section we'll display several examples focusing on the trace of a specific variable in a function, be it static or dynamic.
+In this section we'll display several examples focusing on the trace of a specific variable, be it static or dynamic.
 
 Refer to the [examples.cpp](examples.cpp) file to run the examples. All the snippets shown below show the code partially.
 
 Compile the example
 ```bash
-g++ -fno-omit-frame-pointer examples.cpp -gdwarf-4 -g -o ./compiled
+g++ -fno-omit-frame-pointer examples.cpp -gdwarf-4 -g -o compiled
 ```
 
 ### Static Variables
@@ -265,6 +265,10 @@ int primitiveType(int a) {
   myVar = a + 2;
 
   return myVar;
+}
+
+int main() {
+  int d = primitiveType(2);
 }
 ```
 
@@ -380,7 +384,7 @@ void mallocAndWriteArray() {
 
 int main() {
   mallocAndWriteArray();
-  // Ex 4 within main
+  // Ex 4 it's the same but with variable named arr
 }
 ```
 
@@ -490,6 +494,22 @@ int main() {
 
 ```bash
 Tracer -fname main -vname hello -o my_log_file.log -- ./compiled
+```
+
+
+```smalltalk
+[W]0x00007fffffffe080 0x000055555556d600
+[W]0x000055555556d600 0x6c6c6548
+[W]0x000055555556d604 0x006f
+[R]0x000055555556d601 0x65
+[W]0x000055555556d600 0x00414c42
+```
+
+Being: 
+
+```
+6c6c6548 = lleH
+006f = \0o
 ```
 
 #### Array with mor dimensions (extendable to n) *(Ex 8)*
