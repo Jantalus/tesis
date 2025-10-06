@@ -14,21 +14,21 @@ PREFIX=/usr/local
 
 all: ia32 intel64
 
-$(OBJDIR)TracerMod.so: $(OBJDIR)TracerMod$(OBJ_SUFFIX)
+$(OBJDIR)Tracer.so: $(OBJDIR)Tracer$(OBJ_SUFFIX)
 	$(LINKER) $(TOOL_LDFLAGS_NOOPT) $(LINK_EXE)$@ $(^:%.h=) $(TOOL_LPATHS) $(TOOL_LIBS)
 
 ia32:
 	mkdir -p obj-ia32
-	$(MAKE) TARGET=ia32 obj-ia32/TracerMod.so
+	$(MAKE) TARGET=ia32 obj-ia32/Tracer.so
 
 intel64:
 	mkdir -p obj-intel64
-	$(MAKE) TARGET=intel64 obj-intel64/TracerMod.so
+	$(MAKE) TARGET=intel64 obj-intel64/Tracer.so
 
 clean-all:
 	$(MAKE) TARGET=ia32 clean
 	$(MAKE) TARGET=intel64 clean
 
 install:
-	cp -a TracerMod $(PREFIX)/bin
+	cp -a Tracer $(PREFIX)/bin
 	cp -a obj-* $(PREFIX)/bin

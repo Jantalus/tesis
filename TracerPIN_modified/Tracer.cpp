@@ -1645,20 +1645,18 @@ int main(int argc, char *argv[])
     function_name = KnobFunctionName.Value();
 
     
-    #ifn defined(TARGET_IA32E)
+
+    filter_global_var = (function_name == "" && variable_name != "");
+
+    filter_local_var = (function_name != "" && variable_name != "");
+
+    #if !defined(TARGET_IA32E)
     if (variable_name != "") {
         std::cerr << "Architecture not x86. Can't find RBP to track variable" << std::endl;
     }
     #endif
 
-    filter_global_var = (function_name == "" && variable_name != "");
-
-    filter_local_var = (function_name != "" && variable_name != "");
     if (filter_local_var) {
-#if !defined(TARGET_IA32E)
-        std::cerr << "TARGET IA32e not defined and can't access register data (particularly RBP) for PIN CONTEXT" << std::endl;
-        return 1;
-#endif
         var_byte_size = KnobVarByteSize.Value();
 
         DebugLog("Using Function name: ", function_name);
@@ -1715,6 +1713,11 @@ int main(int argc, char *argv[])
         DebugLog("Command ran: ", command);
 
         std::string globalVarOffsetString = executeCommand(command);
+
+        if (globalVarOffsetString == "") {
+            std::cerr << "Variable is not global" << std::endl;
+            return 1;
+        }
 
         global_var_offset = std::stoi(globalVarOffsetString);
     }

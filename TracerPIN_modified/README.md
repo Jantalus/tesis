@@ -11,6 +11,21 @@ Installation
 TracerPIN requires the [Intel PIN framework](https://www.intel.com/content/www/us/en/developer/articles/tool/pin-a-binary-instrumentation-tool-downloads.html) to compile and run as well as a few packages.
 This tool was developed with version *3.30, kit 98830*
 
+You could either download via the link manually or with the following commands. 
+> Just make sure the `PIN_ROOT` env var is setup to where you extracted the PIN framework.
+
+```bash
+wget https://software.intel.com/sites/landingpage/pintool/downloads/pin-3.30-98830-g1d7b601b3-gcc-linux.tar.gz
+tar xzf pin-3.30-98830-g1d7b601b3-gcc-linux.tar.gz
+mv pin-3.30-98830-g1d7b601b3-gcc-linux /opt
+export PIN_ROOT=/opt/pin-3.30-98830-g1d7b601b3-gcc-linux
+echo -e "\nexport PIN_ROOT=/opt/pin-3.30-98830-g1d7b601b3-gcc-linux" >> ~/.bashrc
+```
+
+Make sure the user has r/w access to the PIN installation and to ease the next steps define PIN_ROOT:
+
+---
+
 One would need for x86 and x86_64 support:
 
 ```bash
@@ -24,6 +39,7 @@ sudo apt-get install --no-install-recommends libstdc++-4.9-dev:i386 libssl-dev:i
 ---
 
 As well as installing the cli tool `dwgrep` from the [GitHub Repo](https://github.com/pmachata/dwgrep), you can follow the installation steps in their [website](https://pmachata.github.io/dwgrep/#installation).
+You will need *CMake* to compile the tool, either by their [official website](https://cmake.org/download/) or with standard APT repositories (i.e.: `sudo apt install cmake`).
 
 To check if `dwgrep` is installed correctly run the following commands:
 ```bash
@@ -74,15 +90,6 @@ you also may need to update **`LD_LIBRARY_PATH`** to include the path to *libzwe
 
 ---
 
-Then for Intel PIN, make sure the user has r/w access to the PIN installation and to ease the next steps define PIN_ROOT:
-
-```bash
-wget https://software.intel.com/sites/landingpage/pintool/downloads/pin-3.30-98830-g1d7b601b3-gcc-linux.tar.gz
-tar xzf pin-3.30-98830-g1d7b601b3-gcc-linux.tar.gz
-mv pin-3.30-98830-g1d7b601b3-gcc-linux /opt
-export PIN_ROOT=/opt/pin-3.30-98830-g1d7b601b3-gcc-linux
-echo -e "\nexport PIN_ROOT=/opt/pin-3.30-98830-g1d7b601b3-gcc-linux" >> ~/.bashrc
-```
 
 Now you're ready to compile TracerPIN and install it.
 
@@ -128,6 +135,7 @@ type:
     * `[-]` Information on base image and libraries
     * `[!]` Information on filtered elements
     * `[T]` Thread event
+    * `[DEBUG]` for debug logs added
 
 
 #### Important Notes
@@ -215,7 +223,7 @@ Refer to the [examples.cpp](examples.cpp) file to run the examples. All the snip
 
 Compile the example
 ```bash
-g++ -fno-omit-frame-pointer examples.cpp -gdwarf-4 -g -o compiled
+g++ -fno-omit-frame-pointer examples.cpp -gdwarf-4 -g -o ./compiled
 ```
 
 ### Static Variables
@@ -237,7 +245,7 @@ int main() {
 You would trace the variable `globalArray` with:
 
 ```bash
-Tracer -vname myVar -vs 16 -o my_log_file.log -- compiled
+Tracer -vname globalArray -vs 16 -o my_log_file.log -- ./compiled
 ```
 
 ```smalltalk
@@ -263,7 +271,7 @@ int primitiveType(int a) {
 You would trace the variable `myVar` with:
 
 ```bash
-Tracer -fname primitiveType -vname myVar -vs 4 -o my_log_file.log -- compiled
+Tracer -fname primitiveType -vname myVar -vs 4 -o my_log_file.log -- ./compiled
 ```
 
 and with `a=2` we would get:
@@ -293,7 +301,7 @@ int main() {
 ```
 You would run (considering `int` occupies 4 bytes):
 ```bash
-Tracer -fname fixedArray -vname myTenPositionVector -vs 40 -o my_log_file.log -- compiled
+Tracer -fname fixedArray -vname myTenPositionVector -vs 40 -o my_log_file.log -- ./compiled
 ```
 
 and get:
@@ -377,7 +385,7 @@ int main() {
 ```
 
 ```bash
-Tracer -fname mallocAndWriteArray -vname otherArr -o my_log_file.log -- compiled
+Tracer -fname mallocAndWriteArray -vname otherArr -o my_log_file.log -- ./compiled
 ```
 
 ```smalltalk
@@ -414,7 +422,7 @@ int main() {
 the memory region will be traced wherever is written. Here we'll trace the writes inside `main` and the ones in the `indirection` function.
 
 ```bash
-Tracer -fname main -vname otherArr -o my_log_file.log -- compiled
+Tracer -fname main -vname otherArr -o my_log_file.log -- ./compiled
 ```
 
 ```smalltalk
@@ -452,7 +460,7 @@ int main() {
 this would trace the writes in `main` and the ones by thread `t`:
 
 ```bash
-Tracer -fname main -vname anotherArray -o my_log_file.log -td 1 -- compiled
+Tracer -fname main -vname anotherArray -o my_log_file.log -td 1 -- ./compiled
 ```
 
 ```smalltalk
@@ -481,7 +489,7 @@ int main() {
 ```
 
 ```bash
-Tracer -fname main -vname hello -o my_log_file.log -- compiled
+Tracer -fname main -vname hello -o my_log_file.log -- ./compiled
 ```
 
 #### Array with mor dimensions (extendable to n) *(Ex 8)*
@@ -511,7 +519,7 @@ int main() {
 ```
 
 ```bash
-Tracer -fname main -vname matrix -o my_log_file.log -- compiled
+Tracer -fname main -vname matrix -o my_log_file.log -- ./compiled
 ```
 lets alias `matrix` to `m`
 
