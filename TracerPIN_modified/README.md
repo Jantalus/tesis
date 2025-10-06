@@ -384,7 +384,7 @@ void mallocAndWriteArray() {
 
 int main() {
   mallocAndWriteArray();
-  // Ex 4 it's the same but with variable named arr
+  // Ex 4 it's the same but with variable named arr and declared in main
 }
 ```
 
@@ -498,11 +498,10 @@ Tracer -fname main -vname hello -o my_log_file.log -- ./compiled
 
 
 ```smalltalk
-[W]0x00007fffffffe080 0x000055555556d600
-[W]0x000055555556d600 0x6c6c6548
-[W]0x000055555556d604 0x006f
-[R]0x000055555556d601 0x65
-[W]0x000055555556d600 0x00414c42
+[W]0x00007fffffffde18 0x000055555556b320
+[W]0x000055555556b320 0x6c6c6548
+[W]0x000055555556b324 0x006f
+[R]0x000055555556b321 0x65
 ```
 
 Being: 
@@ -512,7 +511,7 @@ Being:
 006f = \0o
 ```
 
-#### Array with mor dimensions (extendable to n) *(Ex 8)*
+#### Array with more dimensions *(extendable to n) (Ex 8)*
 
 ```cpp
 int main() {
@@ -551,7 +550,7 @@ lets alias `matrix` to `m`
 [R]0x000055555556b320 0x000055555556b4b0 // read m[0] to write col 0
 [W]0x000055555556b4b0 0x00000000 // write m[0][0]
 [R]0x000055555556b328 0x000055555556b4d0 // read m[1] to write col 0
-[W]0x000055555556b4d0 0x00000001
+[W]0x000055555556b4d0 0x00000001 // ...
 [R]0x000055555556b330 0x000055555556b4f0
 [W]0x000055555556b4f0 0x00000002
 [R]0x000055555556b320 0x000055555556b4b0
