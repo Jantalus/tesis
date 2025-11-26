@@ -1,9 +1,79 @@
 TracerPIN
 ====================
 
-TracerPIN an Intel PIN tool for generating execution traces of a running process.
+Why use this tool?
+----------------------
+For tracing the actual CPU loads and stores performed on a variable.
+
+Motivation
+----------
+
+**The development of this tool is motivated for tracing variables of high volume in number crunching scenarios.
+For instance a large matrix that represents an image.**
+
+*You could also use it for smaller variables* or to trace all memory operations of a program, but it's not the main objective.
+
+Expected use-case
+-----------------
+Trace variables of:
+* **Arrays of primitive types**
+* Primitive types
+
+Either dynamic *(malloced)* or static *(local or global)*.
+
+For instance, you wrote a complex number-crunching routine and allocated a big matrix (or tensor, buffer, etc.) and you want to know exactly how that data structure is really touched by the CPU – the actual sequence of loads and stores performed on the underlying memory pages while your program runs.
+
+This tool lets you do precisely that with a single command:
+
+```cpp
+int my_function() {
+  // more code and function calls
+  int** matrix = (int **)malloc(rows * sizeof(int *));
+
+  // writes to matrix, either directly or by passing the pointer
+  // i.e. other_func(matrix) or matrix[i][j] = ..
+}
+```
+
+```bash
+Tracer -fname my_function -vname matrix -o my_log_file.log -- ./my_program
+```
+This will record all the memory operations made to the region that holds the matrix (or any other variable you specify) and records on the specified file:
+
+
+- Every write that initializes the pointer array
+
+- Every read/write when the matrix (or array) is filled or processed
+
+- Exactly which addresses and in which order they are accessed
+
+---
+
+The result is a clean, chronological log of real memory traffic:
+
+```smalltalk
+[W]0x00007fffffffe0a0 0x000055555556b320 // write on matrix
+[W]0x000055555556b320 0x000055555556b4b0
+[W]0x000055555556b328 0x000055555556b4d0
+[W]0x000055555556b330 0x000055555556b4f0
+[R]0x000055555556b320 0x000055555556b4b0 // matrix read
+...
+```
+
+### Not expected use case
+* Tracing of **std::vectors** 
+* Tracing of structs with pointer fields
+
+The code could be adapted to do so.
+
+
+What is this tool?
+------------------
+
+TracerPIN is an Intel PIN tool for generating execution traces of a running process.
 Support is limited to platforms supported by Intel PIN and TracerPIN has only been tested under
 X86 and X86_64.
+
 
 Installation
 ------------
@@ -38,7 +108,8 @@ sudo apt-get install --no-install-recommends libstdc++-4.9-dev:i386 libssl-dev:i
 ```
 ---
 
-As well as installing the cli tool `dwgrep` from the [GitHub Repo](https://github.com/pmachata/dwgrep), you can follow the installation steps in their [website](https://pmachata.github.io/dwgrep/#installation).
+As well as installing the cli tool `dwgrep` from the [GitHub Repo](https://github.com/pmachata/dwgrep). You can follow the installation steps in their [website](https://pmachata.github.io/dwgrep/#installation).
+
 You will need *CMake* to compile the tool, either by their [official website](https://cmake.org/download/) or with standard APT repositories (i.e.: `sudo apt install cmake`).
 
 To check if `dwgrep` is installed correctly run the following commands:
@@ -172,7 +243,7 @@ More details about options are listed when running `Tracer` command in the *CLI*
 <a id="aclaration"></a>
 > (*): This options won't work if the executable doesn't have debug information
 
-### Executable considerations
+### Important remarks
 If you wish to trace a specific variable you must assure that the executable is compiled with the following parameters (for `clang++/g++/..`):
 
 * `-g` to include debugging information
