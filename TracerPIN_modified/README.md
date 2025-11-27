@@ -3,7 +3,7 @@ TracerPIN
 
 Why use this tool?
 ----------------------
-For tracing the actual CPU loads and stores performed on a variable.
+To trace the actual CPU loads and stores performed on a variable in a program execution. **Mainly static or dynamic primitive types OR arrays of primitive types.**
 
 Motivation
 ----------
