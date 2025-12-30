@@ -3,15 +3,15 @@ TracerPIN
 
 Why use this tool?
 ----------------------
-To trace the actual CPU loads and stores performed on a variable in a program execution. **Mainly static or dynamic primitive types OR arrays of primitive types.**
+To trace the actual CPU loads and stores performed on a variable in a program execution. **Mainly for static or dynamic primitive types, or arrays of primitive types.**
 
 Motivation
 ----------
 
-**The development of this tool is motivated for tracing variables of high volume in number crunching scenarios.
+**The development of this tool is designed for tracing variables of high volume in number crunching scenarios.
 For instance a large matrix that represents an image.**
 
-*You could also use it for smaller variables* or to trace all memory operations of a program, but it's not the main objective.
+*You could also use it for smaller variables* or to trace all memory operations of a program, but it's not the primary use case.
 
 Expected use-case
 -----------------
@@ -38,7 +38,7 @@ int my_function() {
 ```bash
 Tracer -fname my_function -vname matrix -o my_log_file.log -- ./my_program
 ```
-This will record all the memory operations made to the region that holds the matrix (or any other variable you specify) and records on the specified file:
+This will record all the memory operations made to the region that holds the matrix (or any other variable you specify) and records to the specified file:
 
 
 - Every write that initializes the pointer array
@@ -72,7 +72,7 @@ What is this tool?
 
 TracerPIN is an Intel PIN tool for generating execution traces of a running process.
 
-**This tool is an extension of an existing tool** [(*)](#credits), focused on the [motivation](#motivation).
+**This tool is an extension of an existing tool** [(credits)](#credits), focused on the [motivation](#motivation).
 
 Support is limited to platforms supported by Intel PIN and TracerPIN has only been tested under
 X86 and X86_64.
@@ -84,7 +84,7 @@ Installation
 TracerPIN requires the [Intel PIN framework](https://www.intel.com/content/www/us/en/developer/articles/tool/pin-a-binary-instrumentation-tool-downloads.html) to compile and run as well as a few packages.
 This tool was developed with version *3.30, kit 98830*
 
-You could either download via the link manually or with the following commands. 
+You can download via the link manually or with the following commands. 
 > Just make sure the `PIN_ROOT` env var is setup to where you extracted the PIN framework.
 
 ```bash
@@ -99,7 +99,7 @@ Make sure the user has r/w access to the PIN installation and to ease the next s
 
 ---
 
-One would need for x86 and x86_64 support:
+You will need for x86 and x86_64 support:
 
 ```bash
 sudo apt-get install --no-install-recommends wget make g++
@@ -148,8 +148,6 @@ And to clean the files up
 rm hello*
 ```
 
-
-
 If the execution fails you may need to install the next dependencies:
 ```
 libdw-dev 
@@ -158,13 +156,9 @@ liblzma-dev
 libzstd-dev
 bison
 ```
-
 you also may need to update **`LD_LIBRARY_PATH`** to include the path to *libzwerg* (dependency of `dwgrep`). Usually on *`/usr/local/lib64`*
 
-
 ---
-
-
 Now you're ready to compile TracerPIN and install it.
 
 ```bash
@@ -237,23 +231,23 @@ More details about options are listed when running `Tracer` command in the *CLI*
 | Option | Description | Default value |
 | ------ | ----------- | ------------- |
 | `-o <path_to_file>` | Define where the log is saved | *trace-full-info.txt* |
-| `-vname <var_name>` | [(*)](#aclaration) Name of variable to be traced. Use with `-fname` | "" |
-| `-fname <func_name>` |[(*)](#aclaration) Name of function to search for `<var_name>`. Use with `-vname` | "" |
-| `-vs n` | [(*)](#aclaration) Size of variable in bytes. To trace **static** variables | 0 |
+| `-vname <var_name>` | [(*)](#clarification) Name of variable to be traced. Use with `-fname` | "" |
+| `-fname <func_name>` |[(*)](#clarification) Name of function to search for `<var_name>`. Use with `-vname` | "" |
+| `-vs n` | [(*)](#clarification) Size of variable in bytes. To trace **static** variables | 0 |
 | `-td 0/1` | Discriminate on memory logs. (`[Owner][Accessing]`) | 0 |
 | `-recursive 0/1` | Recursively trace malloced memory.  i.e. tracing a dynamic var that gets written other pointers to the heap (i.e. an `**int`) . Only used with `-fname -vname` | 1 |
 | `-excl 0/1` | Exclude instrumentation outside main image | 1 |
 | `-d 0/1` | Turn on debug logs. You can add your own with the function `DebugLog`, see examples in the code | 0 |
 | `-f 0/1` | Enable file output | 1 |
 
-<a id="aclaration"></a>
-> (*): This options won't work if the executable doesn't have debug information
+<a id="clarification"></a>
+> (*): These options won't work if the executable doesn't have debug information
 
 ### Important remarks
 If you wish to trace a specific variable you must assure that the executable is compiled with the following parameters (for `clang++/g++/..`):
 
 * `-g` to include debugging information
-* `-g-dwarf-4` given that the tool reads based on this debug format, to format to *DWARF 4* standard
+* `-g-dwarf-4` given that the tool reads based on this debug format, to use the **DWARF 4** standard
 * `-fno-omit-frame-pointer` to keep the stack frame and maintain consistent behaviour for allocation of variable (pointers)
 
 ### About static variables
@@ -373,7 +367,7 @@ void fixedArray() {
     myTenPositionVector[i] = i;
   }
 
-  int a = myTenPositionVector[3]; // [R] position 4 with value 3
+  int a = myTenPositionVector[3]; // [R] 4th element with value 3
 }
 
 int main() {
@@ -401,7 +395,7 @@ and get:
 ```
 
 #### Other cases
-If you know the byte size of another variable that isn't a primitive type (or pointer to) but the size is fixed, you could indicate the size with the `-vs` parameter, i.e. a struct that lives on the satck.
+If you know the byte size of another variable that isn't a primitive type (or pointer to) but the size is fixed, you could indicate the size with the `-vs` parameter, i.e. a struct that lives on the stack.
 
 ### Dynamic Variables
 > In this case we just need the `-fname` and `-vname`
@@ -415,7 +409,7 @@ There's a particular case you ought to look out for, if using `-fname f -vname v
 when reaching the function `f`, the moment the program does the first write on the variable `v`, then the region of memory will **always be traced** regardless of where it is being written until the pointer is freed.
 Even if the write is made outside the function `f`.
 
-So, if your program passes the memory pointer of `v` to different functions and threads the best option is to indicate by parameter the function that originally caledd `malloc`. 
+So, if your program passes the memory pointer of `v` to different functions and threads the best option is to indicate by parameter the function that originally called `malloc`. 
 
 For better understanding, here's an example:
 ```cpp
@@ -440,8 +434,8 @@ int main() {
 If you indicate to the tool to trace 
 
 * `-fname main -vname var` you would get all the writes and reads from *Point 1* and onwards / or until freed
-* `-fname indirection -vname copy` you would get the the write and reads from *Point 2* and onwards / or until freed
-* `-fname indirection2 -vname copy` you would get the the write and reads from *Point 3* and onwards / or until freed
+* `-fname indirection -vname copy` you would get the write and reads from *Point 2* and onwards / or until freed
+* `-fname indirection2 -vname copy` you would get the write and reads from *Point 3* and onwards / or until freed
 
 This is because the instrumentation logic is modeled to start tracing from the function that asked for the memory (in this case **main**).
 
@@ -482,7 +476,7 @@ Tracer -fname mallocAndWriteArray -vname otherArr -o my_log_file.log -- ./compil
 [R]0x000055555556b32c 0x00000004
 ```
 
-Notice here that we get also get the pointer returned by `malloc`
+Notice here that we also get the pointer returned by `malloc`
 
 #### Write to the pointer of memory outside of the function where it's declared *(Ex 5)*
 
@@ -503,7 +497,7 @@ int main() {
   free(otherArr);
 }
 ```
-the memory region will be traced wherever is written. Here we'll trace the writes inside `main` and the ones in the `indirection` function.
+the memory region will be traced wherever it is written. Here we'll trace the writes inside `main` and the ones in the `indirection` function.
 
 ```bash
 Tracer -fname main -vname otherArr -o my_log_file.log -- ./compiled
@@ -521,7 +515,7 @@ Tracer -fname main -vname otherArr -o my_log_file.log -- ./compiled
 
 #### Write outside of function and other thread *(Ex 6)*
 
-In this case the option `-td 1` would come handy to distinguish which thread is writing the memory region.
+In this case the option `-td 1` would come in handy to distinguish which thread is writing the memory region.
 
 ```cpp
 void indirection(int* myArrPointer, int size) {
@@ -557,6 +551,7 @@ Tracer -fname main -vname anotherArray -o my_log_file.log -td 1 -- ./compiled
 [W][1][0]0x000055555556b328 0x00000002
 ```
 Having `[OperatorThreadID][OwnerThreadID]` (`[0]` is main, `[1]` is **t**)
+i.e. `OwnerThreadID` is the thread that instantiated the memory, and the operator the one who is reading or writing on that memory.
 
 #### Write outside of the main image *(Ex 7)*
 This would be for example using the `std::strcpy` function:
@@ -620,7 +615,7 @@ int main() {
 ```bash
 Tracer -fname main -vname matrix -o my_log_file.log -- ./compiled
 ```
-lets alias `matrix` to `m`
+lets alias `matrix` to `m` for easier comments
 
 ```smalltalk
 [W]0x00007fffffffe0a0 0x000055555556b320 // write on m
@@ -641,6 +636,14 @@ lets alias `matrix` to `m`
 [W]0x000055555556b4f8 0x00000002
 ```
 
+Performance / Overhead
+---
+### TODO
+repeated note of this?
+> For optimization purposes the tool doesn't respect order for logs other than memory write and read logs, as they are buffered.
+Meaning that if you include either `c/b/i/d` options you'll get either mixed traces or the traces generated by the previous options and the memory R/W's at the end. 
+
+
 Original Tool options
 ---
 | Option | Description | Default value |
@@ -649,7 +652,7 @@ Original Tool options
 | `-m 0/1` | Log all memory access | 1 |
 | `-b 0/1` | Log all basic blocks [(PIN BBL definition)](https://software.intel.com/sites/landingpage/pintool/docs/98484/Pin/html/index.html) | 0 |
 | `-c 0/1` | Log all calls | 0 |
-| `-C 0/1` | Log all calls with their first thre args | 0 |
+| `-C 0/1` | Log all calls with their first three args | 0 |
 | `-f 0/1/2` | (0) no filter (1) filter system libraries (2) filter all but main exec | 1 |
 | `-F 0/(0x12..:0x588..)` | Use addresses as start:stop live filter | 0 |
 | `-n 0/n` | Filter *n* occurrences, only with `-F` | 0 |
