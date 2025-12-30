@@ -13,41 +13,36 @@ For instance a large matrix that represents an image.**
 
 *You could also use it for smaller variables* or to trace all memory operations of a program, but it's not the primary use case.
 
-Expected use-case
------------------
+Quick Start
+-----------
+
 Trace variables of:
 * **Arrays of primitive types**
 * Primitive types
 
 Either dynamic *(malloced)* or static *(local or global)*.
 
-For instance, you wrote a complex number-crunching routine and allocated a big matrix (or tensor, buffer, etc.) and you want to know exactly how that data structure is really touched by the CPU – the actual sequence of loads and stores performed on the underlying memory pages while your program runs.
+**Example:** You wrote a complex number-crunching routine and allocated a big matrix (or tensor, buffer, etc.) and you want to know exactly how that data structure is really touched by the CPU – the actual sequence of loads and stores performed on the underlying memory pages while your program runs.
 
-This tool lets you do precisely that with a single command:
+1. **Compile your program with debug information:**
+   ```bash
+   g++ -g -gdwarf4 -fno-omit-frame-pointer your_program.cpp -o your_program
+   ```
 
-```cpp
-int my_function() {
-  // more code and function calls
-  int** matrix = (int **)malloc(rows * sizeof(int *));
+2. **Run TracerPIN to trace a variable:**
+   ```bash
+   Tracer -fname my_function -vname matrix -o my_log_file.log -- ./your_program
+   ```
 
-  // writes to matrix, either directly or by passing the pointer
-  // i.e. other_func(matrix) or matrix[i][j] = ..
-}
-```
+   For static variables, also specify the size:
+   ```bash
+   Tracer -fname myFunction -vname myArray -vs 40 -o trace.log -- ./your_program
+   ```
 
-```bash
-Tracer -fname my_function -vname matrix -o my_log_file.log -- ./my_program
-```
-This will record all the memory operations made to the region that holds the matrix (or any other variable you specify) and records to the specified file:
-
-
+This will record all the memory operations made to the region that holds the variable and save them to the specified file:
 - Every write that initializes the pointer array
-
 - Every read/write when the matrix (or array) is filled or processed
-
 - Exactly which addresses and in which order they are accessed
-
----
 
 The result is a clean, chronological log of real memory traffic:
 
@@ -59,6 +54,8 @@ The result is a clean, chronological log of real memory traffic:
 [R]0x000055555556b320 0x000055555556b4b0 // matrix read
 ...
 ```
+
+See the [Examples](#examples-for-tracing-variables) section for more detailed use cases.
 
 ### Not expected use case
 * Tracing of **std::vectors** 
@@ -78,28 +75,14 @@ Support is limited to platforms supported by Intel PIN and TracerPIN has only be
 X86 and X86_64.
 
 
-Installation
-------------
+Prerequisites
+-------------
 
-TracerPIN requires the [Intel PIN framework](https://www.intel.com/content/www/us/en/developer/articles/tool/pin-a-binary-instrumentation-tool-downloads.html) to compile and run as well as a few packages.
-This tool was developed with version *3.30, kit 98830*
+Before installing TracerPIN, ensure you have the following:
 
-You can download via the link manually or with the following commands. 
-> Just make sure the `PIN_ROOT` env var is setup to where you extracted the PIN framework.
+#### System Packages
 
-```bash
-wget https://software.intel.com/sites/landingpage/pintool/downloads/pin-3.30-98830-g1d7b601b3-gcc-linux.tar.gz
-tar xzf pin-3.30-98830-g1d7b601b3-gcc-linux.tar.gz
-mv pin-3.30-98830-g1d7b601b3-gcc-linux /opt
-export PIN_ROOT=/opt/pin-3.30-98830-g1d7b601b3-gcc-linux
-echo -e "\nexport PIN_ROOT=/opt/pin-3.30-98830-g1d7b601b3-gcc-linux" >> ~/.bashrc
-```
-
-Make sure the user has r/w access to the PIN installation and to ease the next steps define PIN_ROOT
-
----
-
-You will need for x86 and x86_64 support:
+For x86 and x86_64 support, install:
 
 ```bash
 sudo apt-get install --no-install-recommends wget make g++
@@ -109,11 +92,33 @@ sudo apt-get update
 sudo apt-get install --no-install-recommends gcc-multilib g++-multilib
 sudo apt-get install --no-install-recommends libstdc++-4.9-dev:i386 libssl-dev:i386
 ```
----
 
-As well as installing the cli tool `dwgrep` from the [GitHub Repo](https://github.com/pmachata/dwgrep). You can follow the installation steps in their [website](https://pmachata.github.io/dwgrep/#installation).
+#### Intel PIN Framework
 
-You will need *CMake* to compile the tool, either by their [official website](https://cmake.org/download/) or with standard APT repositories (i.e.: `sudo apt install cmake`).
+TracerPIN requires the [Intel PIN framework](https://www.intel.com/content/www/us/en/developer/articles/tool/pin-a-binary-instrumentation-tool-downloads.html) (version 3.30, kit 98830).
+
+You can download it manually or use:
+
+```bash
+wget https://software.intel.com/sites/landingpage/pintool/downloads/pin-3.30-98830-g1d7b601b3-gcc-linux.tar.gz
+tar xzf pin-3.30-98830-g1d7b601b3-gcc-linux.tar.gz
+mv pin-3.30-98830-g1d7b601b3-gcc-linux /opt
+export PIN_ROOT=/opt/pin-3.30-98830-g1d7b601b3-gcc-linux
+echo -e "\nexport PIN_ROOT=/opt/pin-3.30-98830-g1d7b601b3-gcc-linux" >> ~/.bashrc
+```
+
+> Make sure you have read/write access to the PIN installation directory.
+
+#### dwgrep Tool
+
+Install `dwgrep` from the [GitHub Repo](https://github.com/pmachata/dwgrep) following their [installation instructions](https://pmachata.github.io/dwgrep/#installation).
+
+You will need *CMake* to compile the tool, install via their [official website](https://cmake.org/download/) or:
+```bash
+sudo apt install cmake
+```
+
+To verify `dwgrep` installation, run the following commands:
 
 To check if `dwgrep` is installed correctly run the following commands:
 ```bash
@@ -131,40 +136,47 @@ gcc -g -gdwarf-4 -fno-omit-frame-pointer hello.c -o hello
 dwgrep hello -e 'entry ?DW_TAG_compile_unit'
 ```
 
-you should get an output like the following:
+You should get an output like the following:
+
 ```bash
 [b]	compile_unit
 	producer	"GNU C23 15.2.1 20250813 -mtune=generic -march=x86-64 -g -gdwarf-4 -fno-omit-frame-pointer"
 	language	C99
 	name	"hello.c"
-	comp_dir	"/home/mgiampaolo"
+	comp_dir	"/home/you"
 	low_pc	0x1139
 	high_pc	31
 	stmt_list	0
 ```
 
-And to clean the files up
+Clean up the test files:
 ```bash
 rm hello*
 ```
 
-If the execution fails you may need to install the next dependencies:
-```
-libdw-dev 
-libelf-dev 
-liblzma-dev
-libzstd-dev
-bison
-```
-you also may need to update **`LD_LIBRARY_PATH`** to include the path to *libzwerg* (dependency of `dwgrep`). Usually on *`/usr/local/lib64`*
+If verification fails, install additional dependencies:
 
----
-Now you're ready to compile TracerPIN and install it.
+```bash
+sudo apt-get install libdw-dev libelf-dev liblzma-dev libzstd-dev bison
+```
+
+You may also need to update `LD_LIBRARY_PATH` to include the path to *libzwerg* (dependency of `dwgrep`), usually `/usr/local/lib64`:
+
+```bash
+export LD_LIBRARY_PATH=/usr/local/lib64:$LD_LIBRARY_PATH
+```
+
+Installation
+------------
+
+Once prerequisites are installed, compile and install TracerPIN:
 
 ```bash
 make
 sudo make install
 ```
+
+> Ensure `PIN_ROOT` is set in your environment before running `make`.
 
 Usage
 -----
@@ -220,8 +232,7 @@ Tracer -fname myFunc -vname myVar -vs 10 -o my_log_file.log -- ./compiled
 
 #### Important Notes
 
-> For optimization purposes the tool doesn't respect order for logs other than memory write and read logs, as they are buffered.
-Meaning that if you include either `c/b/i/d` options you'll get either mixed traces or the traces generated by the previous options and the memory R/W's at the end. 
+> **Buffering behavior:** For optimization purposes, the tool doesn't respect order for logs other than memory write and read logs, as they are buffered. If you include `-c`, `-b`, `-i`, or `-d` options, you'll get either mixed traces or the traces generated by those options followed by the memory R/W's at the end. 
 
 ### Main Options
 
@@ -238,7 +249,7 @@ More details about options are listed when running `Tracer` command in the *CLI*
 | `-recursive 0/1` | Recursively trace malloced memory.  i.e. tracing a dynamic var that gets written other pointers to the heap (i.e. an `**int`) . Only used with `-fname -vname` | 1 |
 | `-excl 0/1` | Exclude instrumentation outside main image | 1 |
 | `-d 0/1` | Turn on debug logs. You can add your own with the function `DebugLog`, see examples in the code | 0 |
-| `-f 0/1` | Enable file output | 1 |
+| `-file 0/1` | Enable file output | 1 |
 
 <a id="clarification"></a>
 > (*): These options won't work if the executable doesn't have debug information
@@ -247,11 +258,11 @@ More details about options are listed when running `Tracer` command in the *CLI*
 If you wish to trace a specific variable you must assure that the executable is compiled with the following parameters (for `clang++/g++/..`):
 
 * `-g` to include debugging information
-* `-g-dwarf-4` given that the tool reads based on this debug format, to use the **DWARF 4** standard
+* `-gdwarf-4` given that the tool reads based on this debug format, to use the DWARF 4 standard
 * `-fno-omit-frame-pointer` to keep the stack frame and maintain consistent behaviour for allocation of variable (pointers)
 
 ### About static variables
-Debug data doesn't provide information about static variables and their size, for example a fixed array of `int`. That's why when trying to trace a static array you need to indicate the size of the variable with the `-vs` option. This can be a problem if the static variable space is instantiated with a dynamic size: `int myArray[variable]`
+Debug data doesn't provide information about the size of static variables, for example a fixed array of `int`. That's why when trying to trace a static array you need to indicate the size of the variable with the `-vs` option. This limitation means that variable-length arrays (VLAs) cannot be traced: `int myArray[variable]` consistently
 
 If the variable is simply a primitive type, you can check the byte size with the next command:
 
