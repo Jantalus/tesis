@@ -13,5 +13,7 @@ The suite checks that:
 - interior pointers remain ignored by default;
 - `-interior 1 -interior-size 4` traces the selected section and values;
 - an oversized logical section is rejected without crashing.
+- the documented global, stack, malloc, indirection, thread, string, and
+  pointer-to-pointer examples keep their expected event counts.
 
 The script uses a temporary directory for the executable and trace files.

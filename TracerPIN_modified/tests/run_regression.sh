@@ -14,11 +14,21 @@ for name in exact interior oversize; do
     cp "$WORK_DIR/interior_pointer_test" "$WORK_DIR/$name"
 done
 
+g++ -O0 -g -gdwarf-4 -fno-omit-frame-pointer -pthread \
+    "$ROOT_DIR/examples.cpp" -o "$WORK_DIR/examples"
+
 run_trace() {
     local output=$1
     shift
     "$TRACER" -excl 0 -o "$WORK_DIR/$output.trace" "$@" \
         -- "$WORK_DIR/$output"
+}
+
+run_example() {
+    local output=$1
+    shift
+    "$TRACER" -excl 0 -o "$WORK_DIR/$output.trace" "$@" \
+        -- "$WORK_DIR/examples"
 }
 
 assert_lines() {
@@ -41,6 +51,12 @@ assert_value() {
         cat "$file" >&2
         exit 1
     fi
+}
+
+assert_example_lines() {
+    local example=$1
+    local expected=$2
+    assert_lines "$WORK_DIR/$example.trace" "$expected"
 }
 
 # Existing exact-pointer behavior: pointer assignment plus four stores.
@@ -66,5 +82,34 @@ done
 run_trace oversize -fname oversize_case -vname section \
     -interior 1 -interior-size 8
 assert_lines "$WORK_DIR/oversize.trace" 0
+
+# Documented examples.cpp regression.  Addresses are intentionally not
+# checked because they vary between executions; event counts are stable.
+run_example global -vname globalArray -vs 16 -interior 1
+assert_example_lines global 4
+
+run_example primitive -fname primitiveType -vname myVar -vs 4 -interior 1
+assert_example_lines primitive 3
+
+run_example fixed -fname fixedArray -vname myTenPositionVector -vs 40 -interior 1
+assert_example_lines fixed 11
+
+run_example malloc -fname mallocAndWriteArray -vname otherArr -interior 1
+assert_example_lines malloc 7
+
+run_example arr -fname main -vname arr -interior 1
+assert_example_lines arr 7
+
+run_example otherArr -fname main -vname otherArr -interior 1
+assert_example_lines otherArr 7
+
+run_example thread -fname main -vname anotherArray -td 1 -interior 1
+assert_example_lines thread 7
+
+run_example string -fname main -vname hello -interior 1
+assert_example_lines string 4
+
+run_example matrix -fname main -vname matrix -interior 1
+assert_example_lines matrix 16
 
 echo "TracerPIN regression tests passed"
