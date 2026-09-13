@@ -17,7 +17,7 @@ done
 run_trace() {
     local output=$1
     shift
-    "$TRACER" -excl 0 -o "$WORK_DIR/$output" "$@" \
+    "$TRACER" -excl 0 -o "$WORK_DIR/$output.trace" "$@" \
         -- "$WORK_DIR/$output"
 }
 
@@ -45,26 +45,26 @@ assert_value() {
 
 # Existing exact-pointer behavior: pointer assignment plus four stores.
 run_trace exact -fname exact_case -vname buffer -interior 0
-assert_lines "$WORK_DIR/exact" 6
+assert_lines "$WORK_DIR/exact.trace" 6
 for value in 0x00000010 0x00000011 0x00000012 0x00000013; do
-    assert_value "$WORK_DIR/exact" "$value"
+    assert_value "$WORK_DIR/exact.trace" "$value"
 done
 
 # Interior pointers are ignored when the opt-in switch is disabled.
 run_trace interior -fname interior_case -vname section -interior 0
-assert_lines "$WORK_DIR/interior" 0
+assert_lines "$WORK_DIR/interior.trace" 0
 
 # With the switch and a four-byte logical section, the four stores are found.
 run_trace interior -fname interior_case -vname section \
     -interior 1 -interior-size 4
-assert_lines "$WORK_DIR/interior" 6
+assert_lines "$WORK_DIR/interior.trace" 6
 for value in 0x000000a0 0x000000a1 0x000000a2 0x000000a3; do
-    assert_value "$WORK_DIR/interior" "$value"
+    assert_value "$WORK_DIR/interior.trace" "$value"
 done
 
 # A requested section extending past the allocation is rejected safely.
 run_trace oversize -fname oversize_case -vname section \
     -interior 1 -interior-size 8
-assert_lines "$WORK_DIR/oversize" 0
+assert_lines "$WORK_DIR/oversize.trace" 0
 
 echo "TracerPIN regression tests passed"
