@@ -99,6 +99,8 @@ KNOB<BOOL> KnobEnableFileOutput(KNOB_MODE_WRITEONCE, "pintool",
                                 "file", "1", "enable/disable file output (1=enable, 0=disable)");
 KNOB<BOOL> KnobEnableRecursiveAllocTracking(KNOB_MODE_WRITEONCE, "pintool",
                                 "recursive", "1", "enable/disable recursive tracking of malloced pointers (1=enable, 0=disable).\nThis means that when writing a malloced pointer to an already traced section of memory, it will be added to the regions of interest.");
+KNOB<BOOL> KnobTrackInteriorPointers(KNOB_MODE_WRITEONCE, "pintool",
+                                "interior", "0", "enable/disable tracking pointers that point inside an active malloc allocation (1=enable, 0=disable)");
 
 
 // Force each thread's data to be in its own data cache line so that
@@ -364,6 +366,32 @@ struct VariableMemoryLocation
 
     VariableMemoryLocation(ADDRINT start, ADDRINT end, THREADID tid) : startAddress(start), endAdress(end), ownerThread(tid) {}
 };
+
+// Find the active malloc allocation containing pointer.  Allocations are
+// keyed by their base address and cannot overlap while active, so checking
+// the predecessor of upper_bound() is sufficient and costs O(log M).
+static bool FindContainingAllocation(
+    const std::map<ADDRINT, ADDRINT> *allocations,
+    ADDRINT pointer,
+    ADDRINT *allocationBase,
+    ADDRINT *allocationSize)
+{
+    auto it = allocations->upper_bound(pointer);
+    if (it == allocations->begin()) {
+        return false;
+    }
+
+    --it;
+    const ADDRINT base = it->first;
+    const ADDRINT size = it->second;
+    if (pointer < base || pointer - base >= size) {
+        return false;
+    }
+
+    *allocationBase = base;
+    *allocationSize = size;
+    return true;
+}
 
 PIN_LOCK _lockvarreg;
 std::vector<VariableMemoryLocation> varRegions;
@@ -790,22 +818,37 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
 
                     PIN_SafeCopy(&heapAllocatedPointer, (void *)varInStack, sizeof(heapAllocatedPointer));
 
+                    ADDRINT allocationBase = 0;
+                    ADDRINT allocationSize = 0;
+                    bool allocationFound = false;
+
                     auto it = sizeByPointer->find(heapAllocatedPointer);
+                    if (it != sizeByPointer->end()) {
+                        allocationBase = it->first;
+                        allocationSize = it->second;
+                        allocationFound = true;
+                    } else if (KnobTrackInteriorPointers.Value()) {
+                        allocationFound = FindContainingAllocation(
+                            sizeByPointer, heapAllocatedPointer,
+                            &allocationBase, &allocationSize);
+                    }
 
                     // Validate if pointer is from malloc
-                    if (it == sizeByPointer->end()) {
+                    if (!allocationFound) {
                         DebugLog("Pointer 0x", std::hex, heapAllocatedPointer, " not in map", std::dec);
                         // Not found -> Not tracing
                         return;
                     }
 
                     // pointer is from malloc call
-                    ADDRINT varSizeInBytes = it->second;
+                    ADDRINT varSizeInBytes = allocationSize;
 
                     // Append to areas of memory to be traced
                     // we save the <regionOfMemoryOfX>, ThreadThatCreatedX
                     PIN_GetLock(&_lockvarreg, 0);
-                    varRegions.emplace_back(heapAllocatedPointer, (heapAllocatedPointer + varSizeInBytes), tid);
+                    varRegions.emplace_back(allocationBase,
+                                            (allocationBase + varSizeInBytes),
+                                            tid);
                     PIN_ReleaseLock(&_lockvarreg);
                     // Region of memory saved
 
