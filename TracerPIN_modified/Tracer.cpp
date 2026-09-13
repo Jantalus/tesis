@@ -101,6 +101,8 @@ KNOB<BOOL> KnobEnableRecursiveAllocTracking(KNOB_MODE_WRITEONCE, "pintool",
                                 "recursive", "1", "enable/disable recursive tracking of malloced pointers (1=enable, 0=disable).\nThis means that when writing a malloced pointer to an already traced section of memory, it will be added to the regions of interest.");
 KNOB<BOOL> KnobTrackInteriorPointers(KNOB_MODE_WRITEONCE, "pintool",
                                 "interior", "0", "enable/disable tracking pointers that point inside an active malloc allocation (1=enable, 0=disable)");
+KNOB<UINT64> KnobInteriorPointerSize(KNOB_MODE_WRITEONCE, "pintool",
+                                "interior-size", "0", "logical size in bytes of an interior-pointer region; 0 tracks the containing allocation");
 
 
 // Force each thread's data to be in its own data cache line so that
@@ -362,9 +364,14 @@ struct VariableMemoryLocation
 {
     ADDRINT startAddress;
     ADDRINT endAdress;
+    ADDRINT allocationBase;
     THREADID ownerThread;
 
-    VariableMemoryLocation(ADDRINT start, ADDRINT end, THREADID tid) : startAddress(start), endAdress(end), ownerThread(tid) {}
+    VariableMemoryLocation(ADDRINT start, ADDRINT end, THREADID tid,
+                           ADDRINT allocation = 0)
+        : startAddress(start), endAdress(end),
+          allocationBase(allocation == 0 ? start : allocation),
+          ownerThread(tid) {}
 };
 
 // Find the active malloc allocation containing pointer.  Allocations are
@@ -840,15 +847,32 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
                         return;
                     }
 
-                    // pointer is from malloc call
-                    ADDRINT varSizeInBytes = allocationSize;
+                    // By default preserve the old semantics and trace the
+                    // complete allocation.  For an interior pointer, an
+                    // explicit size restricts the tracked region to the
+                    // logical section represented by the pointer.
+                    ADDRINT regionStart = allocationBase;
+                    ADDRINT regionSize = allocationSize;
+                    if (allocationBase != heapAllocatedPointer &&
+                        KnobInteriorPointerSize.Value() != 0) {
+                        const ADDRINT offset = heapAllocatedPointer - allocationBase;
+                        const ADDRINT requestedSize =
+                            static_cast<ADDRINT>(KnobInteriorPointerSize.Value());
+                        if (offset > allocationSize ||
+                            requestedSize > allocationSize - offset) {
+                            DebugLog("Interior pointer region exceeds allocation");
+                            return;
+                        }
+                        regionStart = heapAllocatedPointer;
+                        regionSize = requestedSize;
+                    }
 
                     // Append to areas of memory to be traced
                     // we save the <regionOfMemoryOfX>, ThreadThatCreatedX
                     PIN_GetLock(&_lockvarreg, 0);
-                    varRegions.emplace_back(allocationBase,
-                                            (allocationBase + varSizeInBytes),
-                                            tid);
+                    varRegions.emplace_back(regionStart,
+                                            (regionStart + regionSize),
+                                            tid, allocationBase);
                     PIN_ReleaseLock(&_lockvarreg);
                     // Region of memory saved
 
@@ -1118,7 +1142,7 @@ void FreeBefore(THREADID tid, ADDRINT pointerToFree, ADDRINT returnPointer)
     // Remove from global sections of memory
     PIN_GetLock(&_lockvarreg, 0);
     for (auto it = varRegions.begin(); it != varRegions.end();) {
-        if (it->startAddress == pointerToFree) {
+        if (it->allocationBase == pointerToFree) {
             it = varRegions.erase(it);
         } else {
             ++it;

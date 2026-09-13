@@ -190,7 +190,7 @@ una base para capturar valores escritos. Habría que adaptarlo para filtrar
 
 | Herramienta/configuración | Pregunta 1: accesos | Pregunta 2: valores y orden | Trabajo adicional |
 | --- | --- | --- | --- |
-| TracerPIN usado en el estudio | Sí, para el rango instrumentado | Sí para escrituras instrumentadas | Resolver restricciones de puntero, PIN, DWARF y arquitectura |
+| TracerPIN usado en el estudio | Sí, para el rango instrumentado | Sí para escrituras instrumentadas | PIN, DWARF y arquitectura; `-interior 1` para punteros interiores |
 | Frida `MemoryAccessMonitor` | Parcial: páginas tocadas | No | Usar el prototipo de `Stalker` para obtener granularidad de instrucciones |
 | Frida `Stalker` + `frida_value_trace.js` | Sí, para operandos x86-64 cubiertos | Sí, bytes del operando y orden | Endurecer el decodificador, cubrir otras arquitecturas/instrucciones y reducir el costo |
 | Valgrind Lackey estándar | Sí: tipo, dirección y tamaño | No | Escribir/modificar una herramienta Valgrind sobre VEX IR |
@@ -204,7 +204,7 @@ segunda.
 
 | Herramienta | Información estándar | Extensión para valores | Dificultad estimada |
 | --- | --- | --- | --- |
-| **TracerPIN** | Accesos filtrados, dirección, operación y valor | Ninguna adicional para escrituras, dentro de sus capacidades | Baja para este caso; depende de PIN, DWARF y x86 |
+| **TracerPIN** | Accesos filtrados, dirección, operación y valor | `-interior 1`; opcionalmente `-interior-size` para limitar la sección | Baja-media; depende de PIN, DWARF y x86 |
 | **Frida `MemoryAccessMonitor`** | Primer acceso por página, operación, dirección, instrucción e hilo | `Stalker` y un transformador que decodifique instrucciones y capture operandos | Alta; no es su uso principal |
 | **Frida `Stalker` + prototipo** | Accesos a operandos de memoria, dirección, tamaño, instrucción e hilo | Ya captura bytes y orden para el caso x86-64 probado | Media-alta; es un prototipo específico de arquitectura |
 | **Valgrind Lackey** | Lectura/escritura, dirección y tamaño | Modificar Lackey o escribir una herramienta Valgrind sobre VEX IR | Media-alta |
@@ -228,9 +228,19 @@ Tracer -fname run_zlib -vname compressed -excl 0 \
        -o zlib.trace -- ./study
 ```
 
-En el experimento real usamos variables de entorno para seleccionar el modo y
-la capacidad. `STUDY_DIRECT=1` fue necesario para que el puntero filtrado
-coincidiera con la dirección exacta retornada por `malloc()`.
+En el experimento inicial usamos `STUDY_DIRECT=1` como workaround para que el
+puntero filtrado coincidiera con la dirección exacta retornada por `malloc()`.
+La extensión nueva permite usar el layout normal con guardias:
+
+```bash
+STUDY_MODE=zlib STUDY_INPUT=4096 STUDY_CAPACITY=8192 \
+  Tracer -fname run_zlib -vname compressed \
+  -interior 1 -interior-size 8192 -excl 0 \
+  -o zlib_interior_guarded.trace -- ./study
+```
+
+`-interior-size` evita que el seguimiento de `compressed` abarque toda la
+asignación que contiene las guardias.
 
 ### Frida
 
@@ -377,11 +387,11 @@ Para el objetivo específico de este caso —obtener la secuencia de valores esc
 Pero no es universalmente mejor:
 
 - requiere una combinación específica de PIN, arquitectura y símbolos DWARF;
-- en nuestro experimento el filtro dinámico necesitó el puntero exacto retornado por `malloc()` (`STUDY_DIRECT=1`);
+- en la configuración original el filtro dinámico necesitó el puntero exacto retornado por `malloc()`; la extensión `-interior 1` elimina esa limitación para este caso;
 - su portabilidad y facilidad de instalación son peores que las de Frida; y
 - Valgrind y DynamoRIO ofrecen una descripción más general de accesos, incluyendo lecturas, tamaños, instrucciones e hilos.
 
-La conclusión correcta es: TracerPIN está mejor alineado con la pregunta “¿qué valores escribió esta biblioteca en mi buffer?” sin desarrollar una extensión. DynamoRIO es la alternativa más prometedora si queremos construir una solución equivalente y más general. Valgrind también puede hacerlo, pero exige crear una herramienta propia. Frida puede responderla mediante el prototipo implementado, aunque con mayor trabajo específico de arquitectura y con más limitaciones que TracerPIN.
+La conclusión correcta es: TracerPIN está mejor alineado con la pregunta “¿qué valores escribió esta biblioteca en mi buffer?”. Con la extensión `-interior 1` puede además seguir el buffer normal con guardias, y `-interior-size` permite limitar la sección lógica. DynamoRIO es la alternativa más prometedora si queremos construir una solución equivalente y más general. Valgrind también puede hacerlo, pero exige crear una herramienta propia. Frida puede responderla mediante el prototipo implementado, aunque con mayor trabajo específico de arquitectura y con más limitaciones que TracerPIN.
 
 ## 8. Qué observamos
 
@@ -395,7 +405,9 @@ offsets 0x08–0x0F: 08 09 0A 0B 0C 0D 0E 0F
 offset 0x08: 99
 ```
 
-TracerPIN recuperó esas 12 escrituras y sus valores. Valgrind y DynamoRIO
+TracerPIN recuperó esas 12 escrituras y sus valores. Con la extensión
+`-interior 1 -interior-size 64`, también las recuperó usando el buffer normal
+con guardias. Valgrind y DynamoRIO
 mostraron 14 escrituras en sus trazas sin filtrar: las 12 de `known_writes()`
 y dos escrituras posteriores del allocator durante `free()`. Como en el modo
 directo `compressed == allocation`, los metadatos de liberación caen al
@@ -407,7 +419,9 @@ valores.
 
 En el caso zlib, todos los programas terminaron correctamente: zlib produjo
 334 bytes comprimidos. TracerPIN registró valores asociados con sus 17
-escrituras seleccionadas. El prototipo de Frida registró 16 eventos sobre el
+escrituras seleccionadas. Con `-interior 1 -interior-size 8192`, la nueva
+versión registró 352 eventos, incluyendo 17 escrituras sobre el destino y una
+escritura de la variable puntero. El prototipo de Frida registró 16 eventos sobre el
 buffer —13 lecturas y 3 escrituras— junto con sus bytes observados. Valgrind y
 DynamoRIO estándar registraron accesos detallados, pero no el contenido de
 cada escritura. `MemoryAccessMonitor` de Frida produjo solamente callbacks de

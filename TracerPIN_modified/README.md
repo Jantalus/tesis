@@ -258,6 +258,7 @@ More details about options are listed when running `Tracer` command in the *CLI*
 | `-td 0/1` | Discriminate on memory logs. (`[Owner][Accessing]`) | 0 |
 | `-recursive 0/1` | Recursively trace malloced memory.  i.e. tracing a dynamic var that gets written other pointers to the heap (i.e. an `**int`) . Only used with `-fname -vname` | 1 |
 | `-interior 0/1` | Allow a dynamic pointer variable to refer to an address inside an active `malloc` allocation. Uses an interval lookup; default is disabled. | 0 |
+| `-interior-size n` | With `-interior 1`, track at most `n` bytes starting at the interior pointer. `0` tracks the containing allocation. | 0 |
 | `-excl 0/1` | Exclude instrumentation outside main image | 1 |
 | `-d 0/1` | Turn on debug logs. You can add your own with the function `DebugLog`, see examples in the code | 0 |
 | `-file 0/1` | Enable file output, if 0 will not open log file | 1 |

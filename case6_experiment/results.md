@@ -109,6 +109,10 @@ and filtered to retain references intersecting `compressed`. DynamoRIO's
 
 ## 4. Results
 
+The first table below is the original baseline, which used `STUDY_DIRECT=1`
+to accommodate the previous TracerPIN pointer-resolution behavior. The updated
+guarded-buffer results are reported immediately after it.
+
 The synthetic control has these 12 expected writes:
 
 ```text
@@ -124,6 +128,22 @@ The synthetic control has these 12 expected writes:
 | Frida `Stalker` value prototype | 12 ordered writes | 16 events: 13 reads, 3 writes | Yes for captured memory operands |
 | Valgrind Lackey | 31 selected events, 14 writes | 358 selected events, 20 writes | No in standard configuration |
 | DynamoRIO `drmemtrace` | 31 selected events, 14 writes | 358 selected events, 20 writes | No in standard configuration |
+
+### Updated guarded-buffer run with interior-pointer tracking
+
+After implementing `-interior 1` and `-interior-size`, the same normal guarded
+layout was run without `STUDY_DIRECT=1`:
+
+```text
+known:  13 [W] records total = 1 pointer-variable assignment + 12 buffer writes
+zlib:  352 records total    = 18 writes, including 1 pointer-variable assignment
+```
+
+The 12 `known_writes()` stores were recovered in order and the zlib run
+returned success with 334 output bytes. Of the 18 zlib writes, 17 target
+zlib's destination contents and one is the assignment of the `compressed`
+pointer itself. The `-interior-size` limit prevents the tracked logical region
+from expanding into the surrounding guard bytes.
 
 ### Why Valgrind and DynamoRIO report 14 writes
 
@@ -144,7 +164,9 @@ total in raw traces:  14 writes
 ```
 
 The Frida value prototype avoids these two events because it activates the
-target filter only while `known_writes()` or `compress2()` is executing.
+target filter only while `known_writes()` or `compress2()` is executing. The
+new TracerPIN run avoids them for the logical section because the interior
+region is explicitly limited with `-interior-size`.
 
 ### Frida value-trace examples
 
