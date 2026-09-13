@@ -168,6 +168,32 @@ target filter only while `known_writes()` or `compress2()` is executing. The
 new TracerPIN run avoids them for the logical section because the interior
 region is explicitly limited with `-interior-size`.
 
+### Regression against the TracerPIN examples
+
+The remote build was also compiled from `TracerPIN_modified/examples.cpp` with
+`-O0 -g -gdwarf-4 -fno-omit-frame-pointer -pthread` and every documented
+example was executed with `-interior 1`. All processes exited successfully and
+the traces matched the operations in the source:
+
+| Example | Observed trace |
+| --- | --- |
+| Global array | 4 writes |
+| Primitive local | 2 writes, 1 read |
+| Fixed stack array | 10 writes, 1 read |
+| Local malloc array | 6 writes, 1 read |
+| Main malloc array | 5 writes, 1 read |
+| Indirection function | 6 writes |
+| Two-thread array | 6 writes, split across both threads |
+| Malloc string | 2 writes, 1 read |
+| Pointer-to-pointer matrix | 16 read/write events |
+
+The dynamic examples `arr`, `otherArr`, and `matrix` were repeated with
+`-interior 0`; their trace lengths remained identical (7, 7, and 16 lines).
+This confirms that interior-pointer tracking is opt-in and does not alter the
+existing exact-pointer examples. The first exploratory global-array command
+incorrectly supplied `-fname main`; the documented invocation omits `-fname`
+and completed normally.
+
 ### Frida value-trace examples
 
 The known-control output included events equivalent to:
