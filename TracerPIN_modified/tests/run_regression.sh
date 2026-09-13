@@ -10,12 +10,15 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 
 g++ -O0 -g -gdwarf-4 -fno-omit-frame-pointer \
     "$TEST_DIR/interior_pointer_test.cpp" -o "$WORK_DIR/interior_pointer_test"
+for name in exact interior oversize; do
+    cp "$WORK_DIR/interior_pointer_test" "$WORK_DIR/$name"
+done
 
 run_trace() {
     local output=$1
     shift
     "$TRACER" -excl 0 -o "$WORK_DIR/$output" "$@" \
-        -- "$WORK_DIR/interior_pointer_test" "$output"
+        -- "$WORK_DIR/$output"
 }
 
 assert_lines() {

@@ -30,14 +30,16 @@ extern "C" void oversize_case() {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2) {
+    if (argc != 1) {
         return 2;
     }
-    if (std::strcmp(argv[1], "exact") == 0) {
+    const char *program = std::strrchr(argv[0], '/');
+    program = program == nullptr ? argv[0] : program + 1;
+    if (std::strcmp(program, "exact") == 0) {
         exact_case();
-    } else if (std::strcmp(argv[1], "interior") == 0) {
+    } else if (std::strcmp(program, "interior") == 0) {
         interior_case();
-    } else if (std::strcmp(argv[1], "oversize") == 0) {
+    } else if (std::strcmp(program, "oversize") == 0) {
         oversize_case();
     } else {
         return 2;
