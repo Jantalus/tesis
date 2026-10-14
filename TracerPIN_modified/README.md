@@ -179,6 +179,21 @@ The `Tracer` binary and the instrumentation libraries (`obj-ia32/`, `obj-intel64
 
 > Ensure `PIN_ROOT` is set in your environment before running `make`.
 
+clangd setup
+------------
+
+The repository includes a portable clangd template for contributors. After
+installing Intel PIN, generate the local configuration with:
+
+```bash
+export PIN_ROOT=/path/to/pin-3.30-98830-g1d7b601b3-gcc-linux
+./scripts/configure-clangd.sh
+```
+
+This creates `TracerPIN_modified/.clangd` with the PIN include paths. The
+generated file is intentionally ignored because its paths are specific to the
+local machine.
+
 Usage
 -----
 
