@@ -14,7 +14,9 @@ PREFIX=/usr/local
 
 all: ia32 intel64
 
-$(OBJDIR)Tracer.so: $(OBJDIR)Tracer$(OBJ_SUFFIX)
+$(OBJDIR)Tracer.so: $(OBJDIR)Tracer$(OBJ_SUFFIX) \
+                    $(OBJDIR)DwarfQueries$(OBJ_SUFFIX) \
+                    $(OBJDIR)TraceFormatting$(OBJ_SUFFIX)
 	$(LINKER) $(TOOL_LDFLAGS_NOOPT) $(LINK_EXE)$@ $(^:%.h=) $(TOOL_LPATHS) $(TOOL_LIBS)
 
 ia32:
