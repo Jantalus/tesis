@@ -32,11 +32,12 @@
 #include <sys/syscall.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <array>  // for std::array
-#include <chrono> // for high resolution timing
-#include <string> // for string operations
-#include <cctype> // used to validate string inputs
-#include <thread> // for thread functionality
+#include <string>
+
+#include "DwarfQueries.h"
+#include "TraceEntry.h"
+#include "TraceFormatting.h"
+#include "TracerOptions.h"
 
 // For string split of lowpc,higpc
 #include <vector>
@@ -56,76 +57,14 @@
 #endif
 
 
-// Keep strings alive for the lifetime of the run
-static std::vector<std::string> g_ImageNames;
-
-/* ===================================================================== */
-/* Commandline Switches */
-/* ===================================================================== */
-
-KNOB<std::string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool",
-                                 "o", "trace-full-info.txt", "specify trace file name");
-KNOB<BOOL> KnobLogIns(KNOB_MODE_WRITEONCE, "pintool",
-                      "i", "0", "log all instructions");
-KNOB<BOOL> KnobLogMem(KNOB_MODE_WRITEONCE, "pintool",
-                      "m", "1", "log all memory accesses");
-KNOB<BOOL> KnobLogBB(KNOB_MODE_WRITEONCE, "pintool",
-                     "b", "0", "log all basic blocks");
-KNOB<BOOL> KnobLogCall(KNOB_MODE_WRITEONCE, "pintool",
-                       "c", "0", "log all calls");
-KNOB<BOOL> KnobLogCallArgs(KNOB_MODE_WRITEONCE, "pintool",
-                           "C", "0", "log all calls with their first three args");
-KNOB<std::string> KnobLogFilter(KNOB_MODE_WRITEONCE, "pintool",
-                                "f", "1", "(0) no filter (1) filter system libraries (2) filter all but main exec (0x400000-0x410000) trace only specified address range");
-KNOB<std::string> KnobLogFilterLive(KNOB_MODE_WRITEONCE, "pintool",
-                                    "F", "0", "(0) no live filter (0x400000:0x410000) use addresses as start:stop live filter");
-KNOB<INT> KnobLogFilterLiveN(KNOB_MODE_WRITEONCE, "pintool",
-                             "n", "0", "which occurence to log, 0=all (only for -F start:stop filter)");
-KNOB<BOOL> KnobQuiet(KNOB_MODE_WRITEONCE, "pintool",
-                     "q", "0", "be quiet under normal conditions");
-KNOB<std::string> KnobVariableName(KNOB_MODE_WRITEONCE, "pintool",
-                                   "vname", "", "Variable name, will be used to search the children nodes of the function in the debug data. \n Default ('') means no use of this filter. Use with -fname");
-KNOB<UINT64> KnobVarByteSize(KNOB_MODE_WRITEONCE, "pintool",
-                             "vs", "0", "Variable to trace size in Bytes. Use with -fname -vname, the pressence of a value here assumes an static variable");
-KNOB<std::string> KnobFunctionName(KNOB_MODE_WRITEONCE, "pintool",
-                                   "fname", "", "Function  name, will be used to search in the debug data.\n Default ('') means no use of this filter. Use with -vname");
-KNOB<BOOL> KnobDiscriminateThread(KNOB_MODE_WRITEONCE, "pintool",
-                                  "td", "0", "Discriminate which thread read/writes the variable and who owns it.\n[Owner][Accessing]");
-KNOB<BOOL> KnobExcludeAddressesOutsideMain(KNOB_MODE_WRITEONCE, "pintool",
-                                           "excl", "1", "Exclude instructions to instrment outside main executable, ex: libc.\nThis can lead to lose of traces if the variable pointer is written outside the main image.");
-KNOB<BOOL> KnobDebugLogs(KNOB_MODE_WRITEONCE, "pintool",
-                         "d", "0", "Debug logs, not very useful unless you add your own.");
-KNOB<BOOL> KnobEnableFileOutput(KNOB_MODE_WRITEONCE, "pintool",
-                                "file", "1", "enable/disable file output (1=enable, 0=disable)");
-KNOB<BOOL> KnobEnableRecursiveAllocTracking(KNOB_MODE_WRITEONCE, "pintool",
-                                "recursive", "1", "enable/disable recursive tracking of malloced pointers (1=enable, 0=disable).\nThis means that when writing a malloced pointer to an already traced section of memory, it will be added to the regions of interest.");
-KNOB<BOOL> KnobTrackInteriorPointers(KNOB_MODE_WRITEONCE, "pintool",
-                                "interior", "0", "enable/disable tracking pointers that point inside an active malloc allocation (1=enable, 0=disable)");
-KNOB<UINT64> KnobInteriorPointerSize(KNOB_MODE_WRITEONCE, "pintool",
-                                "interior-size", "0", "logical size in bytes of an interior-pointer region; 0 tracks the containing allocation");
-
-
 // Force each thread's data to be in its own data cache line so that
 // multiple threads do not contend for the same data cache line.
 // This avoids the false sharing problem.
 // #define PADSIZE 56 // 64 byte line size: 64-8
 
-class threadData_t
+struct ThreadData
 {
-public:
-    ADDRINT sizeAsked;
-    // UINT8 _pad[PADSIZE];
-    std::map<ADDRINT, ADDRINT> *sizeByPointer;
-
-    threadData_t()
-    {
-        sizeByPointer = new std::map<ADDRINT, ADDRINT>;
-    }
-
-    ~threadData_t()
-    {
-        free(sizeByPointer);
-    }
+    std::map<ADDRINT, ADDRINT> allocationSizes;
 };
 // Initialized once in main()
 static TLS_KEY tlsKey = INVALID_TLS_KEY;
@@ -141,33 +80,26 @@ std::ofstream TraceFile;
 bool enableFileOutput = true;
 
 // Helper function to check if we should write to file
-inline bool ShouldWriteToFile() {
+inline bool ShouldWriteToFile()
+{
     return enableFileOutput;
 }
 
 // Memory trace buffer structure and global buffer
-struct MemoryTraceEntry
-{
-    THREADID threadOwner;
-    THREADID threadWriter;
-    ADDRINT address;
-    INT32 size;
-    UINT8 memdump[256];
-    CHAR operation; // 'R' for read, 'W' for write
-};
-
-const size_t MAX_BUFFER_ENTRIES = 1'000'000; // Fixed size for buffer
-MemoryTraceEntry traceBuffer1[MAX_BUFFER_ENTRIES];
-MemoryTraceEntry traceBuffer2[MAX_BUFFER_ENTRIES];
+MemoryTraceEntry traceBuffer1[kMaxBufferEntries];
+MemoryTraceEntry traceBuffer2[kMaxBufferEntries];
 
 // Buffer management structure
-struct BufferInfo {
-    MemoryTraceEntry* buffer;
+struct BufferInfo
+{
+    MemoryTraceEntry *buffer;
     size_t index;
     bool inUse;  // true if being written to file
     PIN_LOCK lock;
     
-    BufferInfo(MemoryTraceEntry* buf) : buffer(buf), index(0), inUse(false) {
+    explicit BufferInfo(MemoryTraceEntry *buf)
+        : buffer(buf), index(0), inUse(false)
+    {
         PIN_InitLock(&lock);
     }
 };
@@ -182,15 +114,17 @@ PIN_LOCK fileWriteLock;
 
 
 // Debug logging helper function
-void DebugLog(const std::string& message) {
+void DebugLog(const std::string &message)
+{
     if (KnobDebugLogs.Value() && ShouldWriteToFile()) {
         TraceFile << "[DEBUG] " << message << std::endl;
     }
 }
 
 // Debug logging helper function with formatting support
-template<typename... Args>
-void DebugLog(const std::string& format, Args... args) {
+template <typename... Args>
+void DebugLog(const std::string &format, Args... args)
+{
     if (KnobDebugLogs.Value() && ShouldWriteToFile()) {
         TraceFile << "[DEBUG] ";
         // Simple formatting - you could use a more sophisticated approach
@@ -207,90 +141,9 @@ struct WriteBufferArgs {
     size_t bufferSize;
 };
 
-std::string FormatTraceEntry(const MemoryTraceEntry& entry) {
-    // Preallocate string with estimated capacity
-    std::string result;
-    result.reserve(64); // Adjust based on expected output size (e.g., operation, threads, address, memdump)
-
-    // Hex conversion lookup table
-    static const char hex[] = "0123456789abcdef";
-
-    // Append operation
-    result += '[';
-    result += entry.operation;
-    result += ']';
-
-    // Append thread info if enabled
-    if (KnobDiscriminateThread.Value()) {
-        result += '[';
-        result += std::to_string(entry.threadWriter);
-        result += "][";
-        result += std::to_string(entry.threadOwner);
-        result += ']';
-    }
-
-    // Append address (convert to hex manually for efficiency)
-    result += "0x";
-    char addr_buf[17]; // Enough for 64-bit address (16 hex digits + null)
-    addr_buf[16] = '\0';
-    uintptr_t addr = reinterpret_cast<uintptr_t>(entry.address);
-    for (int i = 15; i >= 0; --i) {
-        addr_buf[i] = hex[addr & 0xF];
-        addr >>= 4;
-    }
-    result += addr_buf;
-    result += ' ';
-
-    // Append memdump based on size
-    switch (entry.size) {
-        case 1: {
-            result += "0x";
-            UINT8 val = entry.memdump[0];
-            result += hex[(val >> 4) & 0xF];
-            result += hex[val & 0xF];
-            break;
-        }
-        case 2: {
-            result += "0x";
-            UINT16 val = *reinterpret_cast<const UINT16*>(entry.memdump);
-            for (int i = 3; i >= 0; --i) {
-                result += hex[(val >> (i * 4)) & 0xF];
-            }
-            break;
-        }
-        case 4: {
-            result += "0x";
-            UINT32 val = *reinterpret_cast<const UINT32*>(entry.memdump);
-            for (int i = 7; i >= 0; --i) {
-                result += hex[(val >> (i * 4)) & 0xF];
-            }
-            break;
-        }
-        case 8: {
-            result += "0x";
-            UINT64 val = *reinterpret_cast<const UINT64*>(entry.memdump);
-            for (int i = 15; i >= 0; --i) {
-                result += hex[(val >> (i * 4)) & 0xF];
-            }
-            break;
-        }
-        default: {
-            for (INT32 j = 0; j < entry.size; ++j) {
-                result += " ";
-                UINT8 val = entry.memdump[j];
-                result += hex[(val >> 4) & 0xF];
-                result += hex[val & 0xF];
-            }
-            break;
-        }
-    }
-
-    result += '\n';
-    return result;
-}
-
 // Thread function to write buffer to file
-void WriteBufferToFile(void* arg) {
+void WriteBufferToFile(void* arg)
+{
     // Extract buffer info from argument
     WriteBufferArgs* args = static_cast<WriteBufferArgs*>(arg);
     BufferInfo* bufferInfo = args->bufferInfo;
@@ -302,7 +155,7 @@ void WriteBufferToFile(void* arg) {
     std::stringstream bulkData; 
     for (size_t i = 0; i < bufferSize; i++) {
         const MemoryTraceEntry& entry = bufferInfo->buffer[i];
-        bulkData << FormatTraceEntry(entry);
+        bulkData << FormatTraceEntry(entry, KnobDiscriminateThread.Value());
     }
     
     // Single file write operation
@@ -363,13 +216,13 @@ bool filter_local_var = false;
 struct VariableMemoryLocation
 {
     ADDRINT startAddress;
-    ADDRINT endAdress;
+    ADDRINT endAddress;
     ADDRINT allocationBase;
     THREADID ownerThread;
 
     VariableMemoryLocation(ADDRINT start, ADDRINT end, THREADID tid,
                            ADDRINT allocation = 0)
-        : startAddress(start), endAdress(end),
+        : startAddress(start), endAddress(end),
           allocationBase(allocation == 0 ? start : allocation),
           ownerThread(tid) {}
 };
@@ -403,14 +256,14 @@ static bool FindContainingAllocation(
 PIN_LOCK _lockvarreg;
 std::vector<VariableMemoryLocation> varRegions;
 
-void printVarRegions(std::vector<VariableMemoryLocation> regions)
+void LogVariableRegions(const std::vector<VariableMemoryLocation> &regions)
 {
     if (!ShouldWriteToFile() || !KnobDebugLogs.Value()) return;
     
     TraceFile << regions.size() << " elements" << "[";
     for (const auto &varRegion : regions)
     {
-        TraceFile << "<0x" << varRegion.startAddress << ", 0x" << varRegion.endAdress << "> ";
+        TraceFile << "<0x" << varRegion.startAddress << ", 0x" << varRegion.endAddress << "> ";
     }
 
     TraceFile << "]" << std::endl;
@@ -428,9 +281,7 @@ ADDRINT filter_live_stop = 0;
 INT32 filter_live_n = 0;
 INT32 filter_live_i = 0;
 bool filter_live_reached = false;
-bool quiet = false;
 long long bigcounter = 0; // Ready for 4 billions of instructions
-long long currentbbl = 0;
 enum InfoTypeType
 {
     T,
@@ -442,13 +293,6 @@ enum InfoTypeType
 };
 InfoTypeType InfoType = T;
 std::string TraceName;
-
-enum LogTypeType
-{
-    HUMAN,
-};
-
-LogTypeType LogType = HUMAN;
 
 /* ============================================================================= */
 /* Intel PIN (3.7) is missing implementations of many C functions, we implement  */
@@ -527,20 +371,6 @@ bool IsWithinDwarfFunction(ADDRINT addr) {
     return (addr >= (main_begin + func_offset)) && (addr < (main_begin + func_offset + func_totalbytes));
 }
 
-std::vector<std::string> splitstring(std::string myString, char delimiter)
-{
-    std::istringstream stream(myString);
-    std::string token;
-    std::vector<std::string> result;
-
-    while (std::getline(stream, token, delimiter))
-    {
-        result.push_back(token);
-    }
-
-    return result;
-}
-
 /* ===================================================================== */
 /* Helper Functions                                                      */
 /* ===================================================================== */
@@ -588,25 +418,6 @@ BOOL ExcludedAddress(ADDRINT ip)
     return FALSE;
 }
 
-BOOL ExcludedAddressForVar(ADDRINT ip)
-{
-
-    //    cerr << hex << ip << "<>" << filter_live_start << dec << std::endl;
-    if (ip == filter_live_start)
-    {
-        filter_live_i++;
-        if ((filter_live_n == 0) || (filter_live_i == filter_live_n))
-            filter_live_reached = true;
-        //        cerr << "BEGIN " << filter_live_i << " @" << hex << filter_live_start << dec << " -> " << filter_live_reached << std::endl;
-    }
-    if (ip == filter_live_stop)
-    {
-        filter_live_reached = false;
-        //        cerr << "END   " << filter_live_i << " @" << hex << filter_live_stop << dec << " -> " << filter_live_reached << std::endl;
-    }
-    return !filter_live_reached;
-}
-
 BOOL ExcludedAddressLive(ADDRINT ip)
 {
     // Always test for (logfilterlive) before calling this function!
@@ -631,13 +442,13 @@ BOOL ExcludedAddressLive(ADDRINT ip)
 /* Helper Functions for Instruction_cb                                   */
 /* ===================================================================== */
 
-VOID printInst(ADDRINT ip, std::string *disass, INT32 size)
+VOID LogInstruction(ADDRINT ip, std::string *disass, INT32 size)
 {
     UINT8 v[32];
     // test on logfilterlive here to avoid calls when not using live filtering
     if (logfilterlive && ExcludedAddressLive(ip))
         return;
-    if ((size_t)size > sizeof(v))
+    if (static_cast<size_t>(size) > sizeof(v))
     {
         std::cerr << "[!] Instruction size > 32 at " << std::dec << bigcounter << std::hex << (void *)ip << " " << *disass << std::endl;
         return;
@@ -662,44 +473,14 @@ VOID printInst(ADDRINT ip, std::string *disass, INT32 size)
     PIN_ReleaseLock(&_lock);
 }
 
-// Helper function to format a trace entry to string
-std::string FormatTraceEntryOld(const MemoryTraceEntry& entry)
-{
-    std::stringstream ss;
-    ss << "[" << entry.operation << "]";
-    if (KnobDiscriminateThread.Value()) {
-        ss << "[" << entry.threadWriter << "]";
-        ss << "[" << entry.threadOwner << "]";
-    }
-    
-    ss << (void*)entry.address << " " << std::hex;
-    
-    switch (entry.size) {
-        case 1:
-            ss << "0x" << std::setfill('0') << std::setw(2) << static_cast<UINT32>(entry.memdump[0]);
-            break;
-        case 2:
-            ss << "0x" << std::setfill('0') << std::setw(4) << *(UINT16*)entry.memdump;
-            break;
-        case 4:
-            ss << "0x" << std::setfill('0') << std::setw(8) << *(UINT32*)entry.memdump;
-            break;
-        case 8:
-            ss << "0x" << std::setfill('0') << std::setw(16) << *(UINT64*)entry.memdump;
-            break;
-        default:
-            for (INT32 j = 0; j < entry.size; j++) {
-                ss << " " << std::setfill('0') << std::setw(2) << static_cast<UINT32>(entry.memdump[j]);
-            }
-            break;
-    }
-    ss << std::setfill(' ') << std::endl;
-    return ss.str();
-}
-
-
-// Aux function to add memory trace entry to buffer and flush when full
-void AddToTraceBuffer(THREADID threadOwner, THREADID threadWriter, ADDRINT address, INT32 size, UINT8* memdump, CHAR operation, bool isPrefetch)
+// The caller must hold the trace lock while appending to the active buffer.
+void AppendMemoryTrace(THREADID threadOwner,
+                       THREADID threadWriter,
+                       ADDRINT address,
+                       INT32 size,
+                       const UINT8 *memdump,
+                       CHAR operation,
+                       bool isPrefetch)
 {
     // This is used with the log already acquired
     if (isPrefetch || !ShouldWriteToFile()) {
@@ -714,14 +495,14 @@ void AddToTraceBuffer(THREADID threadOwner, THREADID threadWriter, ADDRINT addre
     currentBuffer->buffer[currentBuffer->index].operation = operation;
     
     // Copy memdump data
-    for (int i = 0; i < size && i < 256; i++) {
+    for (INT32 i = 0; i < size && i < static_cast<INT32>(kMaxMemoryDumpBytes); i++) {
         currentBuffer->buffer[currentBuffer->index].memdump[i] = memdump[i];
     }
     
     currentBuffer->index++;
     
     // Flush buffer when full
-    if (currentBuffer->index >= MAX_BUFFER_ENTRIES) {
+    if (currentBuffer->index >= kMaxBufferEntries) {
         // Mark current buffer as in use for writing
         PIN_GetLock(&currentBuffer->lock, 0);
         currentBuffer->inUse = true;
@@ -759,12 +540,13 @@ void AddToTraceBuffer(THREADID threadOwner, THREADID threadWriter, ADDRINT addre
         PIN_ReleaseLock(&newBuffer->lock);
         
         // Spawn thread to write the full buffer to file
-        WriteBufferArgs* args = new WriteBufferArgs{writeBuffer, MAX_BUFFER_ENTRIES};
+        WriteBufferArgs *args = new WriteBufferArgs{writeBuffer, kMaxBufferEntries};
         PIN_SpawnInternalThread(WriteBufferToFile, args, 0, PIN_THREAD_UID(NULL));
     }
 }
 
-ADDRINT calculateVarOffset(ADDRINT rbpValue) {
+ADDRINT CalculateVariableAddress(ADDRINT rbpValue)
+{
     ADDRINT offsetFromCFA = 0;
     if (isGnuCompiled) {
         #if defined(TARGET_IA32E)
@@ -794,7 +576,7 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
 
 
         // Used for the dynamic case and static case
-        threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, tid));
+        ThreadData *threadData = static_cast<ThreadData *>(PIN_GetThreadData(tlsKey, tid));
         ADDRINT rbpValue = 0;
         if (regRBP != 0) {
             rbpValue = regRBP;
@@ -805,9 +587,9 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
         
         if (var_byte_size == 0) {
             // DYNAMIC VARIABLE
-            std::map<ADDRINT, ADDRINT> *sizeByPointer = threadData->sizeByPointer;
+            std::map<ADDRINT, ADDRINT> &allocationSizes = threadData->allocationSizes;
             if (IsWithinDwarfFunction(ip)) {
-                ADDRINT varInStack = calculateVarOffset(rbpValue);
+                ADDRINT varInStack = CalculateVariableAddress(rbpValue);
 
 
                 DebugLog("W on 0x", std::hex, addr, " R: 0x", rbpValue, " R - Of 0x", varInStack, std::dec);
@@ -829,14 +611,14 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
                     ADDRINT allocationSize = 0;
                     bool allocationFound = false;
 
-                    auto it = sizeByPointer->find(heapAllocatedPointer);
-                    if (it != sizeByPointer->end()) {
+                    auto it = allocationSizes.find(heapAllocatedPointer);
+                    if (it != allocationSizes.end()) {
                         allocationBase = it->first;
                         allocationSize = it->second;
                         allocationFound = true;
                     } else if (KnobTrackInteriorPointers.Value()) {
                         allocationFound = FindContainingAllocation(
-                            sizeByPointer, heapAllocatedPointer,
+                            &allocationSizes, heapAllocatedPointer,
                             &allocationBase, &allocationSize);
                     }
 
@@ -877,7 +659,7 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
                     // Region of memory saved
 
                     DebugLog("VarRegions ADD x region");
-                    printVarRegions(varRegions);
+                    LogVariableRegions(varRegions);
 
                     // Proceed to trace the pointer (to the heap) written
                 }
@@ -886,7 +668,7 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
 
             PIN_GetLock(&_lockvarreg, 0);
             for (const auto &memoryRegion : varRegions) {
-                if (memoryRegion.startAddress <= addr && addr < memoryRegion.endAdress) {
+                if (memoryRegion.startAddress <= addr && addr < memoryRegion.endAddress) {
                     // Reading or writing some memory of an instantiation of x
                     // Save the owner threadId
                     threadOwnerOfX = memoryRegion.ownerThread;
@@ -902,10 +684,10 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
 
                             PIN_SafeCopy(&writingBytes, (void *)addr, sizeof(writingBytes));
 
-                            auto it = sizeByPointer->find(writingBytes);
+                            auto it = allocationSizes.find(writingBytes);
 
                             // Validate if it is a malloced pointer
-                            if (it == sizeByPointer->end())
+                            if (it == allocationSizes.end())
                             {
                                 // Not found -> not malloced memory
                                 DebugLog("Pointer 0x", std::hex, addr, " not in map", std::dec);
@@ -916,7 +698,7 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
                                 varRegions.emplace_back(writingBytes, (writingBytes + varSizeInBytes), tid);
 
                                 DebugLog("indirect add char - VarRegions ADD x region");
-                                printVarRegions(varRegions);
+                                LogVariableRegions(varRegions);
                             }
                         }
                     }
@@ -933,7 +715,7 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
                 ADDRINT varInStack = rbpValue - trueOffset;
                 */
 
-                ADDRINT varInStack = calculateVarOffset(rbpValue);
+                ADDRINT varInStack = CalculateVariableAddress(rbpValue);
 
                 if (!(IsWithinDwarfFunction(ip) && addr == varInStack)) {
                     return;
@@ -951,7 +733,7 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
 
             DebugLog("Address 0x", std::hex, ip, " in func address range", std::dec);
 
-            ADDRINT varLowADDR = calculateVarOffset(rbpValue);
+            ADDRINT varLowADDR = CalculateVariableAddress(rbpValue);
             ADDRINT varHighADDR = varLowADDR + var_byte_size;
 
             if (varLowADDR > addr || varHighADDR <= addr) {
@@ -1004,7 +786,7 @@ static VOID RecordMem(const ADDRINT regRBP, THREADID tid, ADDRINT ip, CHAR r, AD
     }
 
     // SECTION 5: Logging
-    AddToTraceBuffer(threadOwnerOfX, tid, addr, size, memdump, r, isPrefetch);
+    AppendMemoryTrace(threadOwnerOfX, tid, addr, size, memdump, r, isPrefetch);
     PIN_ReleaseLock(&_lock);
 }
 
@@ -1102,7 +884,7 @@ VOID Instruction_cb(INS ins, VOID *v) {
     if (KnobLogIns.Value()) {
         std::string *disass = new std::string(INS_Disassemble(ins));
         INS_InsertCall(
-            ins, IPOINT_BEFORE, (AFUNPTR)printInst,
+            ins, IPOINT_BEFORE, (AFUNPTR)LogInstruction,
             IARG_INST_PTR,
             IARG_PTR, disass,
             IARG_UINT32, INS_Size(ins),
@@ -1120,24 +902,26 @@ void FreeBefore(THREADID tid, ADDRINT pointerToFree, ADDRINT returnPointer)
         return;
     }
 
-    threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, tid));
+    ThreadData *threadData = static_cast<ThreadData *>(PIN_GetThreadData(tlsKey, tid));
     int i = 0;
     // Remove from local thread malloc pointers
-    for (std::map<ADDRINT, ADDRINT>::iterator it = threadData->sizeByPointer->begin(); it != threadData->sizeByPointer->end(); it++) {
+    for (auto it = threadData->allocationSizes.begin(); it != threadData->allocationSizes.end(); ++it) {
 
         DebugLog("Thread FREE", tid, "- MapElement", i, "of map is:", it->second);
 
         if ((it->first) == pointerToFree)
         {
-            threadData->sizeByPointer->erase(it);
-            DebugLog("Thread ", tid, " freed ", std::hex, pointerToFree, " with 0x", std::hex, it->second, " bytes", std::dec);
+            const ADDRINT allocationSize = it->second;
+            threadData->allocationSizes.erase(it);
+            DebugLog("Thread ", tid, " freed ", std::hex, pointerToFree,
+                     " with 0x", std::hex, allocationSize, " bytes", std::dec);
             break;
         }
         i++;
     }
 
     DebugLog("VarRegions before freeing");
-    printVarRegions(varRegions);
+    LogVariableRegions(varRegions);
 
     // Remove from global sections of memory
     PIN_GetLock(&_lockvarreg, 0);
@@ -1151,21 +935,17 @@ void FreeBefore(THREADID tid, ADDRINT pointerToFree, ADDRINT returnPointer)
     PIN_ReleaseLock(&_lockvarreg);
 
     DebugLog("VarRegions after freeing");
-    printVarRegions(varRegions);
-}
-
-void MallocBeforeLog(THREADID tid, size_t size, ADDRINT returnIp, const char* imgName) {
-    TraceFile << "[BEFORE] malloc from " << imgName
-              << " size=" << size << std::dec << std::endl; 
-}
-
-void MallocAfterLog(THREADID tid, VOID* retPtr, ADDRINT returnIp, const char* imgName) {
-    TraceFile << "[AFTER] malloc from " << imgName
-              << " returned ptr=" << retPtr << std::dec << std::endl;
+    LogVariableRegions(varRegions);
 }
 
 // Wrapper for malloc
-VOID* MallocWrapper(THREADID threadid, size_t size, AFUNPTR originalMalloc, const char* imgName, ADDRINT retIp, CONTEXT* ctxt) {
+VOID *MallocWrapper(THREADID threadid,
+                    size_t size,
+                    AFUNPTR originalMalloc,
+                    const char *imgName,
+                    ADDRINT retIp,
+                    CONTEXT *ctxt)
+{
     // Prepare return value and argument for malloc
     VOID* ptr = nullptr; // Return value (first argument)
     size_t arg_size = size; // Argument to malloc
@@ -1181,29 +961,14 @@ VOID* MallocWrapper(THREADID threadid, size_t size, AFUNPTR originalMalloc, cons
 
     // Consolidated logic: directly insert the malloc pointer and size into the thread data
     if (IsWithinMainExec(retIp)) {
-        threadData_t *threadData = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, threadid));
-        threadData->sizeByPointer->insert({(ADDRINT)ptr, size});
+        ThreadData *threadData = static_cast<ThreadData *>(PIN_GetThreadData(tlsKey, threadid));
+        threadData->allocationSizes.insert({(ADDRINT)ptr, size});
 
         DebugLog("Saved: <0x", (ADDRINT)ptr, ",", size, "> on malloc map");
     }
 
     return ptr;
 }
-
-VOID* MallocWrapper2(CONTEXT* ctxt, AFUNPTR origMalloc, size_t size) {
-    TraceFile << "MyMalloc: Allocating " << size << " bytes" << std::endl;
-// Call the original malloc function
-    VOID* result;
-    PIN_CallApplicationFunction(ctxt, PIN_ThreadId(), CALLINGSTD_DEFAULT, origMalloc, NULL,
-                               PIN_PARG(VOID*), &result,
-                               PIN_PARG(size_t), size,
-                               PIN_PARG_END());
-
-    // Optional: Additional logic after malloc
-    TraceFile << "MyMalloc: Returned pointer " << result << std::endl;
-    return result;
-}
-
 
 /* ================================================================================= */
 /* This is called every time a MODULE (dll, etc.) is LOADED                          */
@@ -1213,48 +978,7 @@ void ImageLoad_cb(IMG Img, void *v)
     std::string imageName = IMG_Name(Img);
     ADDRINT lowAddress = IMG_LowAddress(Img);
     ADDRINT highAddress = IMG_HighAddress(Img);
-    // UINT32 numRegions = IMG_NumRegions(Img);
-
-    /*
-    for (SEC sec = IMG_SecHead(Img); SEC_Valid(sec); sec = SEC_Next(sec)) {
-        for (RTN rtn = SEC_RtnHead(sec); RTN_Valid(rtn); rtn = RTN_Next(rtn)) {
-            if (RTN_Name(rtn).find("malloc") != std::string::npos) {
-                TraceFile << "In image " << imageName << " Found malloc-like: " << RTN_Name(rtn) << std::endl;
-            }
-             // Store image name so the C-string stays valid
-            //g_ImageNames.emplace_back(IMG_Name(Img));
-            //const char *imgNameCStr = g_ImageNames.back().c_str();
-
-            const char *imgNameCStr = IMG_Name(Img).c_str();
-
-            RTN_Open(rtn);
-
-            // BEFORE malloc
-            RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)MallocBeforeLog,
-                           IARG_THREAD_ID,
-                           IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // malloc(size)
-                           IARG_RETURN_IP,
-                           IARG_PTR, imgNameCStr,
-                           IARG_END);
-
-            // AFTER malloc
-            RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)MallocAfterLog,
-                           IARG_THREAD_ID,
-                           IARG_FUNCRET_EXITPOINT_VALUE, // return pointer
-                           IARG_RETURN_IP,
-                           IARG_PTR, imgNameCStr,
-                           IARG_END);
-
-            RTN_Close(rtn);
-            //std::cout << "Found function: " << RTN_Name(rtn) << " in " << IMG_Name(Img) << std::endl;
-        }
-    }
-*/
-
-
     bool filtered = false;
-
-    //SYM_Address
 
     // Instrument malloc routine, for tracking dynamic variables
     RTN mallocRtn = RTN_FindByName(Img, MALLOC);
@@ -1353,7 +1077,6 @@ void LogBasicBlock(ADDRINT addr, UINT32 size)
     if (InfoType >= B)
         bigcounter++;
     InfoType = B;
-    currentbbl = bigcounter;
     if (ShouldWriteToFile()) {
         TraceFile << "[B]" << std::setw(10) << std::dec << bigcounter << std::hex << std::setw(16) << (void *)addr << " loc_" << std::hex << addr << ":";
         TraceFile << " // size=" << std::dec << size;
@@ -1505,7 +1228,7 @@ void Trace_cb(TRACE trace, void *v)
 void ThreadStart_cb(THREADID threadIndex, CONTEXT *ctxt, INT32 flags, VOID *v)
 {
     PIN_GetLock(&_lock, threadIndex + 1);
-    threadData_t *allocatedVariables = new threadData_t;
+    ThreadData *allocatedVariables = new ThreadData;
     if (PIN_SetThreadData(tlsKey, allocatedVariables, threadIndex) == FALSE)
     {
         std::cerr << "PIN_SetThreadData allocatedVariables failed" << std::endl;
@@ -1526,7 +1249,7 @@ void ThreadFinish_cb(THREADID threadIndex, const CONTEXT *ctxt, INT32 code, VOID
     DebugLog("[T]", std::setw(10), std::dec, bigcounter, std::hex, " Thread 0x", PIN_ThreadUid(), " finished. Code: ", std::dec, code);
 
     // free data saved by thread
-    threadData_t *tdata = static_cast<threadData_t *>(PIN_GetThreadData(tlsKey, threadIndex));
+    ThreadData *tdata = static_cast<ThreadData *>(PIN_GetThreadData(tlsKey, threadIndex));
     delete tdata;
 
     PIN_ReleaseLock(&_lock);
@@ -1554,7 +1277,7 @@ VOID Fini(INT32 code, VOID *v) {
             for (size_t i = 0; i < currentBuffer->index; i++) {
                 const MemoryTraceEntry& entry = currentBuffer->buffer[i];
                 
-                bulkData << FormatTraceEntry(entry);
+                bulkData << FormatTraceEntry(entry, KnobDiscriminateThread.Value());
             }
             
             // Single file write operation
@@ -1567,95 +1290,6 @@ VOID Fini(INT32 code, VOID *v) {
     }
 
     PROTO_Free(proto_malloc);
-}
-
-// Function to execute the command and read the output
-std::string executeCommand(const std::string &command)
-{
-    // Open the process using popen
-    std::array<char, 128> buffer;
-    std::string result;
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(command.c_str(), "r"), pclose);
-
-    if (!pipe)
-    {
-        return "";
-    }
-
-    // Read the output of the command
-    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr)
-    {
-        result += buffer.data();
-    }
-
-    return result;
-}
-
-std::string sanitizeIdentifier(const std::string& input) {
-    std::string result;
-    
-    // Process first character: must be letter or underscore
-    if (!input.empty()) {
-        if (std::isalpha(input[0]) || input[0] == '_') {
-            result += input[0];
-        }
-    }
-    
-    // Process remaining characters: keep letters, digits, and underscores
-    for (size_t i = 1; i < input.length(); ++i) {
-        if (std::isalnum(input[i]) || input[i] == '_') {
-            result += input[i];
-        }
-    }
-    
-    // If result is empty, return a default valid identifier
-    if (result.empty()) {
-        return "_";
-    }
-    
-    return result;
-}
-
-bool isGnuCompiler(const std::string& producer) {
-    return producer.find("GNU C") != std::string::npos;
-}
-
-std::string dwgrepGetGlobalVarOffset(const std::string& executable,
-                                  const std::string& variable_name) {
-    std::string sanitized_v = sanitizeIdentifier(variable_name);
-
-    std::string command = "dwgrep " + executable + " -e '(|D| let V := D entry ?DW_TAG_variable (@DW_AT_name == \"" + sanitized_v + "\");" +
-                        "let Loc := V @DW_AT_location ?(elem label == DW_OP_addr) elem value;" + 
-                        "Loc \"%d\")'";
-
-    return command;
-}
-
-std::string dwgrepGetLowPCHighPCAndOffsetCommand(const std::string& executable,
-                                  const std::string& function_name,
-                                  const std::string& variable_name) {
-
-    std::string sanitized_f = sanitizeIdentifier(function_name);
-    std::string sanitized_v = sanitizeIdentifier(variable_name);
-
-
-    std::string command = "dwgrep " + executable + " -e '(\n|D|\n" +
-                         "let F := D entry ?DW_TAG_subprogram (@DW_AT_name == \"" +
-                         sanitized_f + "\"); \n" +
-                         "let V := F child ?TAG_variable (@DW_AT_name == \"" +
-                         sanitized_v + "\"); \n" +
-                         "let Loc := V @DW_AT_location ?(elem label == DW_OP_fbreg) elem value;\n\n" +
-                         "F @DW_AT_low_pc F @DW_AT_high_pc \"%d,%d,%( Loc %)\" \n)'";
-    return command;
-}
-
-std::string dwgrepGetProducer(const std::string& executable) {
-
-
-    std::string command = "dwgrep " + executable + " -e '(\n|D|\n" +
-                         "let F := D entry ?DW_TAG_compile_unit; \n" +
-                         "F @DW_AT_producer \"%s\" \n)'";
-    return command;
 }
 
 /* ===================================================================== */
@@ -1713,12 +1347,12 @@ int main(int argc, char *argv[])
 
     
 
-    filter_global_var = (function_name == "" && variable_name != "");
+    filter_global_var = (function_name.empty() && !variable_name.empty());
 
-    filter_local_var = (function_name != "" && variable_name != "");
+    filter_local_var = (!function_name.empty() && !variable_name.empty());
 
     #if !defined(TARGET_IA32E)
-    if (variable_name != "") {
+    if (!variable_name.empty()) {
         std::cerr << "Architecture not x86. Can't find RBP to track variable" << std::endl;
     }
     #endif
@@ -1730,8 +1364,8 @@ int main(int argc, char *argv[])
         DebugLog("Using Variable name: ", variable_name, " with size ", std::dec, var_byte_size);
 
         //std::string command = "/home//Desktop/tesis/prueba/tool " + function_name + " " + variable_name + " " + std::string(argv[argc - 1]);
-        std::string command = dwgrepGetLowPCHighPCAndOffsetCommand( std::string(argv[argc - 1]), function_name, variable_name);
-        std::string lowpc_highpc_varoffset = executeCommand(command);
+        std::string command = BuildDwgrepLocalVariableQuery(argv[argc - 1], function_name, variable_name);
+        std::string lowpc_highpc_varoffset = ExecuteCommand(command);
 
         if (lowpc_highpc_varoffset == "") {
             std::cerr << "ERR: failed getting data from debug section" << std::endl;
@@ -1740,7 +1374,7 @@ int main(int argc, char *argv[])
         DebugLog("Command ran: ", command);
         DebugLog("Output from tool: ", lowpc_highpc_varoffset);
 
-        std::vector<std::string> debug_info = splitstring(lowpc_highpc_varoffset, ',');
+        std::vector<std::string> debug_info = SplitString(lowpc_highpc_varoffset, ',');
         if (debug_info.size() != 3)
         {
             std::cerr << "ERR: do not have 3 numbers as the result of getting the debug info" << std::endl;
@@ -1768,18 +1402,18 @@ int main(int argc, char *argv[])
         DebugLog("Var offset: 0x", var_offset, " Var offset - ADDRINT(16): 0x", var_offset - ADDRINT(16), std::dec);
 
         // Important to calculate CFA, for clang++ CFA = RBP, for g++ CFA = RBP + 16
-        command = dwgrepGetProducer(std::string(argv[argc - 1]));
-        std::string producer = executeCommand(command);
-        isGnuCompiled = isGnuCompiler(producer);
+        command = BuildDwgrepProducerQuery(argv[argc - 1]);
+        std::string producer = ExecuteCommand(command);
+        isGnuCompiled = IsGnuCompiler(producer);
     } else if (filter_global_var) {
         var_byte_size = KnobVarByteSize.Value();
         DebugLog("Using Variable name: ", variable_name, " with size ", std::dec, var_byte_size);
 
-        std::string command = dwgrepGetGlobalVarOffset(std::string(argv[argc - 1]), variable_name);
+        std::string command = BuildDwgrepGlobalVariableQuery(argv[argc - 1], variable_name);
 
         DebugLog("Command ran: ", command);
 
-        std::string globalVarOffsetString = executeCommand(command);
+        std::string globalVarOffsetString = ExecuteCommand(command);
 
         if (globalVarOffsetString == "") {
             std::cerr << "Variable is not global" << std::endl;
